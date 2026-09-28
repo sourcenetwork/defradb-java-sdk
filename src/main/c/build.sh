@@ -41,7 +41,7 @@ fi
 if [ "$android_present" = true ]; then
     NDK=${ANDROID_NDK:?Set ANDROID_NDK for Android builds}
     mkdir -p $JNI/arm64-v8a
-    "$NDK/toolchains/llvm/prebuilt/$HOST_TAG/bin/aarch64-linux-android21-clang" \
+    "$NDK/toolchains/llvm/prebuilt/$HOST_TAG/bin/aarch64-linux-android24-clang" \
         -fPIC \
         -I"${JAVA_HOME}/include" -I"${JAVA_HOME}/include/$JNI_PLATFORM" \
         -L$JNI/arm64-v8a -ldefradb \
@@ -49,7 +49,7 @@ if [ "$android_present" = true ]; then
         nativewrapper.c
 
     mkdir -p $JNI/x86_64
-    "$NDK/toolchains/llvm/prebuilt/$HOST_TAG/bin/x86_64-linux-android21-clang" \
+    "$NDK/toolchains/llvm/prebuilt/$HOST_TAG/bin/x86_64-linux-android24-clang" \
         -fPIC \
         -I"${JAVA_HOME}/include" -I"${JAVA_HOME}/include/$JNI_PLATFORM" \
         -L$JNI/x86_64 -ldefradb \
