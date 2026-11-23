@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main]
 
+env:
+  DEFRA_DIR: ${{ github.workspace }}/../defradb.rs
+  CARGO_TERM_COLOR: always
+
 jobs:
   build-desktop-and-test:
     name: Build ${{ matrix.target }} Library and Test
@@ -28,30 +32,54 @@ jobs:
           distribution: 'temurin'
           java-version: '11'
 
-      - name: Clone DefraDB
-        run: git clone https://github.com/sourcenetwork/defradb /tmp/defradb
+      - name: Clone defradb.rs
+        run: git clone --depth=1 https://github.com/sourcenetwork/defradb.rs "$DEFRA_DIR"
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: '/tmp/defradb/go.mod'
-          cache: false
-
-      - name: Make scripts executable
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
         run: |
-          chmod +x gradlew build.sh
-          find /tmp/defradb -name "*.sh" -exec chmod +x {} +
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev pkg-config protobuf-compiler libdbus-1-dev
+
+      - name: Install system dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install protobuf
+
+      # rustup installs the toolchain defradb.rs pins in rust-toolchain.toml
+      # the first time cargo runs there.
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cbindgen
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cbindgen
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ env.DEFRA_DIR }}
+          key: ${{ matrix.target }}
 
       - name: Build desktop library
-        run: ./build.sh --defra-dir /tmp/defradb --${{ matrix.target }}
+        run: |
+          chmod +x gradlew build.sh src/main/c/build.sh
+          ./build.sh --defra-dir "$DEFRA_DIR" --${{ matrix.target }}
 
-      - name: Compile test
+      - name: Compile tests
         run: |
           mkdir -p test-out
-          javac -cp build/libs/defradb.jar test/DefraTest.java -d test-out
+          javac -cp build/libs/defradb.jar test/DefraTest.java test/DefraApiTest.java -d test-out
 
-      - name: Run test
+      - name: Run smoke test
         run: java -cp build/libs/defradb.jar:test-out DefraTest
+
+      # The remote-signer check signs blocks with P-256, which defradb.rs
+      # refuses by default because Go peers cannot verify ES256 block signatures.
+      - name: Run API test
+        env:
+          DEFRA_ALLOW_NON_GO_VERIFIABLE_SIGNING: '1'
+        run: java -Xcheck:jni -cp build/libs/defradb.jar:test-out DefraApiTest
 
   build-android:
     name: Build Android Library and Test
@@ -83,22 +111,32 @@ jobs:
         with:
           ndk-version: r26d
 
-      - name: Clone DefraDB
-        run: git clone https://github.com/sourcenetwork/defradb /tmp/defradb
+      - name: Clone defradb.rs
+        run: git clone --depth=1 https://github.com/sourcenetwork/defradb.rs "$DEFRA_DIR"
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: '/tmp/defradb/go.mod'
-          cache: false
-
-      - name: Make scripts executable
+      - name: Install system dependencies
         run: |
-          chmod +x gradlew build.sh
-          find /tmp/defradb -name "*.sh" -exec chmod +x {} +
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cbindgen
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cbindgen
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ env.DEFRA_DIR }}
+          key: android
 
       - name: Build Android library
-        run: ./build.sh --defra-dir /tmp/defradb --android
+        run: |
+          chmod +x gradlew build.sh src/main/c/build.sh
+          ./build.sh --defra-dir "$DEFRA_DIR" --android
         env:
           ANDROID_NDK: ${{ steps.setup-ndk.outputs.ndk-path }}
 

@@ -1,4 +1,6 @@
 #!/bin/bash
+# Compiles the JNI wrapper, nativewrapper.c, against defra.h and links it to
+# the libdefradb the top-level build.sh staged for each target.
 set -euo pipefail
 
 android_present=false
@@ -16,6 +18,12 @@ done
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
 JNI=../jniLibs
+CFLAGS=(-std=c11 -fPIC -O2 -Wall -Wextra -Werror)
+
+if [ ! -f defra.h ]; then
+    echo "Error: defra.h not found; run the top-level build.sh first"
+    exit 1
+fi
 
 case "$(uname -s)" in
     Darwin)
@@ -28,6 +36,7 @@ case "$(uname -s)" in
         ;;
     *) echo "Unsupported host"; exit 1 ;;
 esac
+JNI_INCLUDES=(-I"${JAVA_HOME}/include" -I"${JAVA_HOME}/include/$JNI_PLATFORM")
 
 if [ "$linux_present" = true ] && [ "$JNI_PLATFORM" != linux ]; then
     echo "Error: --linux requires a Linux host"
@@ -40,48 +49,38 @@ fi
 
 if [ "$android_present" = true ]; then
     NDK=${ANDROID_NDK:?Set ANDROID_NDK for Android builds}
-    mkdir -p $JNI/arm64-v8a
-    "$NDK/toolchains/llvm/prebuilt/$HOST_TAG/bin/aarch64-linux-android24-clang" \
-        -fPIC \
-        -I"${JAVA_HOME}/include" -I"${JAVA_HOME}/include/$JNI_PLATFORM" \
-        -L$JNI/arm64-v8a -ldefradb \
-        -shared -o $JNI/arm64-v8a/libnativewrapper.so \
-        nativewrapper.c
-
-    mkdir -p $JNI/x86_64
-    "$NDK/toolchains/llvm/prebuilt/$HOST_TAG/bin/x86_64-linux-android24-clang" \
-        -fPIC \
-        -I"${JAVA_HOME}/include" -I"${JAVA_HOME}/include/$JNI_PLATFORM" \
-        -L$JNI/x86_64 -ldefradb \
-        -shared -o $JNI/x86_64/libnativewrapper.so \
-        nativewrapper.c
+    for abi in arm64-v8a x86_64; do
+        case "$abi" in
+            arm64-v8a) triple=aarch64-linux-android ;;
+            x86_64) triple=x86_64-linux-android ;;
+        esac
+        mkdir -p "$JNI/$abi"
+        "$NDK/toolchains/llvm/prebuilt/$HOST_TAG/bin/${triple}24-clang" \
+            "${CFLAGS[@]}" "${JNI_INCLUDES[@]}" \
+            -shared -o "$JNI/$abi/libnativewrapper.so" \
+            nativewrapper.c \
+            -L"$JNI/$abi" -ldefradb
+    done
 fi
 
 if [ "$linux_present" = true ]; then
     LINUX_OUT=../linuxLibs
-    mkdir -p $LINUX_OUT
-    gcc \
-        -fPIC \
-        -I"${JAVA_HOME}/include" -I"${JAVA_HOME}/include/$JNI_PLATFORM" \
+    mkdir -p "$LINUX_OUT"
+    gcc "${CFLAGS[@]}" "${JNI_INCLUDES[@]}" \
         -Wl,-rpath,'$ORIGIN' \
-        -shared \
-        -o $LINUX_OUT/libnativewrapper.so \
+        -shared -o "$LINUX_OUT/libnativewrapper.so" \
         nativewrapper.c \
-        -L$LINUX_OUT \
-        -ldefradb
+        -L"$LINUX_OUT" -ldefradb
 fi
 
 if [ "$macos_present" = true ]; then
     MACOS_OUT=../macosLibs
-    mkdir -p $MACOS_OUT
-    clang \
-        -fPIC \
-        -I"${JAVA_HOME}/include" -I"${JAVA_HOME}/include/darwin" \
+    mkdir -p "$MACOS_OUT"
+    clang "${CFLAGS[@]}" "${JNI_INCLUDES[@]}" \
         -Wl,-rpath,@loader_path \
         -Wl,-install_name,@rpath/libnativewrapper.dylib \
-        -dynamiclib \
-        -o $MACOS_OUT/libnativewrapper.dylib \
+        -Wl,-U,_defra_profiling_start -Wl,-U,_defra_profiling_stop \
+        -dynamiclib -o "$MACOS_OUT/libnativewrapper.dylib" \
         nativewrapper.c \
-        -L$MACOS_OUT \
-        -ldefradb
+        -L"$MACOS_OUT" -ldefradb
 fi

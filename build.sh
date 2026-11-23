@@ -1,67 +1,65 @@
 #!/bin/bash
+# Builds the SDK against a defradb.rs checkout: the Rust C API library
+# (crates/entry-points/ffi) with cargo, its header defra.h with cbindgen,
+# the JNI wrapper against both, and the JAR or AAR that packages them.
+set -euo pipefail
+
 android_present=false
 linux_present=false
 macos_present=false
 cleanup=false
 defra_dir=""
-silent=false
+desktop_features=""
+android_features="native,iroh"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# -------------------------
-# ARG PARSING
-# -------------------------
+usage() {
+    echo "Usage: ./build.sh --defra-dir <defradb.rs> [ --linux ] [ --macos ] [ --android ] [ --cleanup ]"
+    echo "                  [ --features <list> ] [ --android-features <list> ]"
+    echo "Select --linux, --macos, or --android. Android can be combined with the host desktop target."
+    echo "--features replaces the ffi crate's default features for the desktop library."
+    echo "--android-features sets the Android library's features (default: $android_features)."
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --android)
-            android_present=true
-            shift
-            ;;
-        --linux)
-            linux_present=true
-            shift
-            ;;
-        --macos)
-            macos_present=true
-            shift
-            ;;
-        --cleanup)
-            cleanup=true
-            shift
-            ;;
-        --silent)
-            silent=true
-            shift
-            ;;
-        --defra-dir)
+        --android) android_present=true; shift ;;
+        --linux) linux_present=true; shift ;;
+        --macos) macos_present=true; shift ;;
+        --cleanup) cleanup=true; shift ;;
+        --defra-dir|--features|--android-features)
             if [[ $# -lt 2 || -z "$2" || "$2" = --* ]]; then
-                echo "Error: --defra-dir requires a path"
+                echo "Error: $1 requires a value"
                 exit 1
             fi
-            defra_dir="$2"
+            case "$1" in
+                --defra-dir) defra_dir="$2" ;;
+                --features) desktop_features="$2" ;;
+                --android-features) android_features="$2" ;;
+            esac
             shift 2
             ;;
-        --help|-h)
-            echo "Usage: ./build.sh [ --android ] [ --linux ] [ --macos ] [ --cleanup ] [ --silent ] --defra-dir <path>"
-            echo "Select --linux, --macos, or --android. Android can be combined with the host desktop target."
-            exit 0
-            ;;
-        *)
-            echo "Unknown argument: $1"
-            exit 1
-            ;;
+        --help|-h) usage; exit 0 ;;
+        *) echo "Unknown argument: $1"; usage; exit 1 ;;
     esac
 done
 
 if [ -z "$defra_dir" ]; then
     echo "Error: --defra-dir is required"
-    echo "Usage: ./build.sh [ --android ] [ --linux ] [ --macos ] [ --cleanup ] [ --silent ] --defra-dir <path>"
+    usage
+    exit 1
+fi
+if [ "$android_present" = false ] && [ "$linux_present" = false ] && [ "$macos_present" = false ]; then
+    echo "Error: select --linux, --macos, or --android"
     exit 1
 fi
 
-BUILD_TAGS_FLAG=""
-[ "$silent" = true ] && BUILD_TAGS_FLAG="BUILD_TAGS=silent"
-
-defra_dir_abs="$(cd "$defra_dir" && pwd)" || exit 1
+defra_dir_abs="$(cd "$defra_dir" && pwd)"
+if [ ! -f "$defra_dir_abs/crates/entry-points/ffi/cbindgen.toml" ]; then
+    echo "Error: $defra_dir_abs is not a defradb.rs checkout (no crates/entry-points/ffi/cbindgen.toml)"
+    exit 1
+fi
+target_dir="${CARGO_TARGET_DIR:-$defra_dir_abs/target}"
 
 if [ "$linux_present" = true ] && [ "$(uname -s)" != Linux ]; then
     echo "Error: --linux requires a Linux host"
@@ -73,160 +71,114 @@ if [ "$macos_present" = true ] && [ "$(uname -s)" != Darwin ]; then
 fi
 
 if [ -z "${JAVA_HOME:-}" ] && [ "$(uname -s)" = Darwin ]; then
-    JAVA_HOME="$(/usr/libexec/java_home)" || exit 1
+    JAVA_HOME="$(/usr/libexec/java_home)"
     export JAVA_HOME
 fi
 if [ ! -f "${JAVA_HOME:-}/include/jni.h" ]; then
     echo "Error: JAVA_HOME must point to a full JDK with include/jni.h"
     exit 1
 fi
+for tool in cargo cbindgen; do
+    if ! command -v "$tool" >/dev/null; then
+        echo "Error: $tool not found on PATH"
+        exit 1
+    fi
+done
 
-mkdir -p "$script_dir/src/main/linuxLibs"
-mkdir -p "$script_dir/src/main/jniLibs/arm64-v8a"
-mkdir -p "$script_dir/src/main/jniLibs/x86_64"
-mkdir -p "$script_dir/src/main/c"
+c_dir="$script_dir/src/main/c"
 
-# nativewrapper.c is maintained in the DefraDB repo (it's also used to build DefraDB's Java test client), so the
-# copy compiled here is always pulled from there rather than kept in this repo.
-if [ ! -f "$defra_dir_abs/cbindings/nativewrapper.c" ]; then
-    echo "Error: $defra_dir_abs/cbindings/nativewrapper.c not found"
-    exit 1
-fi
-cp "$defra_dir_abs/cbindings/nativewrapper.c" "$script_dir/src/main/c/" || exit 1
-echo "Copied nativewrapper.c"
+echo "Generating defra.h..."
+cbindgen --quiet \
+    --config "$defra_dir_abs/crates/entry-points/ffi/cbindgen.toml" \
+    --crate ffi \
+    --output "$c_dir/defra.h" \
+    "$defra_dir_abs"
+
+# The ffi crate builds libffi; the SDK ships it as libdefradb, the name the
+# JNI wrapper links and NativeLoader extracts.
+build_desktop() {
+    local feature_args=()
+    if [ -n "$desktop_features" ]; then
+        feature_args=(--no-default-features --features "$desktop_features")
+    fi
+    (cd "$defra_dir_abs" && cargo build --release -p ffi "${feature_args[@]}")
+}
 
 # -------------------------
 # ANDROID BUILD
 # -------------------------
 if [ "$android_present" = true ]; then
-    echo "Running Android build..."
-    (cd "$defra_dir_abs" && make build-c-shared-android $BUILD_TAGS_FLAG)
-    if [ $? -ne 0 ]; then
-        echo "make build-c-shared-android FAILED"
-        exit 1
-    fi
+    ndk="${ANDROID_NDK:?Set ANDROID_NDK for Android builds}"
+    case "$(uname -s)" in
+        Darwin) host_tag=darwin-x86_64 ;;
+        Linux) host_tag=linux-x86_64 ;;
+        *) echo "Error: unsupported host for Android builds"; exit 1 ;;
+    esac
+    toolchain="$ndk/toolchains/llvm/prebuilt/$host_tag/bin"
 
-    if [ -f "$defra_dir_abs/build/arm64-v8a/libdefradb.so" ]; then
-        echo "Android arm64-v8a build successful"
-        cp "$defra_dir_abs/build/arm64-v8a/libdefradb.so" "$script_dir/src/main/jniLibs/arm64-v8a/"
-        echo "Copied ARM64 .so"
-    else
-        echo "Android arm64-v8a build FAILED"
-        exit 1
-    fi
+    for abi in arm64-v8a x86_64; do
+        case "$abi" in
+            arm64-v8a) triple=aarch64-linux-android ;;
+            x86_64) triple=x86_64-linux-android ;;
+        esac
+        env_triple="$(echo "$triple" | tr '[:lower:]-' '[:upper:]_')"
+        cc_triple="${triple//-/_}"
+        echo "Building libdefradb for Android $abi..."
+        rustup target add "$triple" >/dev/null
+        (
+            cd "$defra_dir_abs"
+            env \
+                "CARGO_TARGET_${env_triple}_LINKER=$toolchain/${triple}24-clang" \
+                "CC_${cc_triple}=$toolchain/${triple}24-clang" \
+                "CXX_${cc_triple}=$toolchain/${triple}24-clang++" \
+                "AR_${cc_triple}=$toolchain/llvm-ar" \
+                cargo build --release -p ffi --target "$triple" \
+                --no-default-features --features "$android_features"
+        )
+        mkdir -p "$script_dir/src/main/jniLibs/$abi"
+        cp "$target_dir/$triple/release/libffi.so" "$script_dir/src/main/jniLibs/$abi/libdefradb.so"
+    done
 
-    if [ -f "$defra_dir_abs/build/x86_64/libdefradb.so" ]; then
-        echo "Android x86_64 build successful"
-        cp "$defra_dir_abs/build/x86_64/libdefradb.so" "$script_dir/src/main/jniLibs/x86_64/"
-        echo "Copied x86_64 .so"
-    else
-        echo "Android x86_64 build FAILED"
-        exit 1
-    fi
+    echo "Building the JNI wrapper for Android..."
+    bash "$c_dir/build.sh" --android
 
-    cp "$defra_dir_abs/build/libdefradb.h" "$script_dir/src/main/c/"
-    cp "$defra_dir_abs/build/defra_structs.h" "$script_dir/src/main/c/"
-    echo "Copied Android headers"
-
-    echo "Running C build for Android..."
-    if [ -f "$script_dir/src/main/c/build.sh" ]; then
-        chmod +x "$script_dir/src/main/c/build.sh"
-        (cd "$script_dir/src/main/c" && ./build.sh --android) || exit 1
-        echo "Android C build completed"
-    else
-        echo "Warning: src/main/c/build.sh not found"
-    fi
-
-    echo "Running Android Gradle build..."
+    echo "Packaging the Android AAR..."
     "$script_dir/gradlew" -p "$script_dir" -b "$script_dir/build-android.gradle" assembleRelease
-    if [ $? -eq 0 ]; then
-        echo "Android Gradle build successful"
-    else
-        echo "Android Gradle build FAILED"
-        exit 1
-    fi
 fi
 
 # -------------------------
 # LINUX BUILD
 # -------------------------
 if [ "$linux_present" = true ]; then
-    echo "Running Linux build..."
-    (cd "$defra_dir_abs" && make build-c-shared-linux $BUILD_TAGS_FLAG)
-    if [ $? -ne 0 ]; then
-        echo "make build-c-shared-linux FAILED"
-        exit 1
-    fi
+    echo "Building libdefradb for Linux..."
+    build_desktop
+    mkdir -p "$script_dir/src/main/linuxLibs"
+    cp "$target_dir/release/libffi.so" "$script_dir/src/main/linuxLibs/libdefradb.so"
 
-    if [ -f "$defra_dir_abs/build/libdefradb.so" ]; then
-        echo "Linux build successful"
-        cp "$defra_dir_abs/build/libdefradb.so" "$script_dir/src/main/linuxLibs/"
-        echo "Copied Linux .so"
-    else
-        echo "Linux build FAILED"
-        exit 1
-    fi
+    echo "Building the JNI wrapper for Linux..."
+    bash "$c_dir/build.sh" --linux
 
-    cp "$defra_dir_abs/build/libdefradb.h" "$script_dir/src/main/c/"
-    cp "$defra_dir_abs/build/defra_structs.h" "$script_dir/src/main/c/"
-    echo "Copied Linux headers"
-
-    echo "Running C build for Linux..."
-    if [ -f "$script_dir/src/main/c/build.sh" ]; then
-        chmod +x "$script_dir/src/main/c/build.sh"
-        (cd "$script_dir/src/main/c" && ./build.sh --linux) || exit 1
-        echo "Linux C build completed"
-    else
-        echo "Warning: src/main/c/build.sh not found"
-    fi
-
-    echo "Running Linux Gradle build..."
+    echo "Packaging the Linux JAR..."
     "$script_dir/gradlew" -p "$script_dir" -b "$script_dir/build-linux.gradle" build
-    if [ $? -eq 0 ]; then
-        echo "Linux Gradle build successful"
-    else
-        echo "Linux Gradle build FAILED"
-        exit 1
-    fi
 fi
 
 # -------------------------
 # MACOS BUILD
 # -------------------------
 if [ "$macos_present" = true ]; then
-    echo "Running macOS build..."
-    (cd "$defra_dir_abs" && make build-c-shared-macos $BUILD_TAGS_FLAG)
-    if [ $? -ne 0 ]; then
-        echo "make build-c-shared-macos FAILED"
-        exit 1
-    fi
+    echo "Building libdefradb for macOS..."
+    build_desktop
+    mkdir -p "$script_dir/src/main/macosLibs"
+    cp "$target_dir/release/libffi.dylib" "$script_dir/src/main/macosLibs/libdefradb.dylib"
+    # The wrapper finds the library beside itself through @rpath, not at the
+    # path cargo built it in.
+    install_name_tool -id @rpath/libdefradb.dylib "$script_dir/src/main/macosLibs/libdefradb.dylib"
 
-    if [ -f "$defra_dir_abs/build/libdefradb.dylib" ]; then
-        echo "macOS build successful"
-        mkdir -p "$script_dir/src/main/macosLibs"
-        cp "$defra_dir_abs/build/libdefradb.dylib" "$script_dir/src/main/macosLibs/" || exit 1
-        echo "Copied macOS .dylib"
-    else
-        echo "macOS build FAILED"
-        exit 1
-    fi
+    echo "Building the JNI wrapper for macOS..."
+    bash "$c_dir/build.sh" --macos
 
-    cp "$defra_dir_abs/build/libdefradb.h" "$script_dir/src/main/c/" || exit 1
-    cp "$defra_dir_abs/build/defra_structs.h" "$script_dir/src/main/c/" || exit 1
-    echo "Copied macOS headers"
-
-    echo "Running C build for macOS..."
-    (cd "$script_dir/src/main/c" && bash build.sh --macos) || exit 1
-    echo "macOS C build completed"
-
-    echo "Running macOS Gradle build..."
+    echo "Packaging the macOS JAR..."
     "$script_dir/gradlew" -p "$script_dir" -b "$script_dir/build-macos.gradle" build
-    if [ $? -eq 0 ]; then
-        echo "macOS Gradle build successful"
-    else
-        echo "macOS Gradle build FAILED"
-        exit 1
-    fi
 fi
 
 # -------------------------
@@ -234,16 +186,10 @@ fi
 # -------------------------
 if [ "$cleanup" = true ]; then
     echo "Cleaning up build artifacts..."
-    rm -f "$script_dir/src/main/c/libdefradb.h"
-    rm -f "$script_dir/src/main/c/defra_structs.h"
-    rm -f "$script_dir/src/main/c/nativewrapper.c"
-    rm -f "$script_dir/src/main/linuxLibs/libdefradb.so"
-    rm -f "$script_dir/src/main/linuxLibs/libnativewrapper.so"
-    rm -f "$script_dir/src/main/jniLibs/arm64-v8a/libdefradb.so"
-    rm -f "$script_dir/src/main/jniLibs/x86_64/libdefradb.so"
-    rm -f "$script_dir/src/main/jniLibs/arm64-v8a/libnativewrapper.so"
-    rm -f "$script_dir/src/main/jniLibs/x86_64/libnativewrapper.so"
-    rm -f "$script_dir/src/main/macosLibs/libdefradb.dylib"
-    rm -f "$script_dir/src/main/macosLibs/libnativewrapper.dylib"
-    echo "Cleanup complete"
+    rm -f "$c_dir/defra.h"
+    rm -f "$script_dir/src/main/linuxLibs/libdefradb.so" "$script_dir/src/main/linuxLibs/libnativewrapper.so"
+    rm -f "$script_dir/src/main/macosLibs/libdefradb.dylib" "$script_dir/src/main/macosLibs/libnativewrapper.dylib"
+    for abi in arm64-v8a x86_64; do
+        rm -f "$script_dir/src/main/jniLibs/$abi/libdefradb.so" "$script_dir/src/main/jniLibs/$abi/libnativewrapper.so"
+    done
 fi

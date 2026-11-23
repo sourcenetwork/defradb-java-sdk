@@ -28,10 +28,6 @@ public class DefraTransaction {
         NativeLoader.load("defradb");
     }
 
-    // Core Transaction Methods
-    private native DefraResult TransactionCommitNative(long txnPtr);
-    private native void TransactionDiscardNative(long txnPtr);
-    
     // ACP Methods
     private native DefraResult ACPAddDACPolicyNative(long txnPtr, long identityPtr, String policy);
     private native DefraResult ACPAddDACActorRelationshipNative(long txnPtr, long identityPtr, String collection, String docID, String relation, String actor);
@@ -41,55 +37,66 @@ public class DefraTransaction {
     private native DefraResult ACPAddNACActorRelationshipNative(long txnPtr, long identityPtr, String relation, String actor);
     private native DefraResult ACPDeleteNACActorRelationshipNative(long txnPtr, long identityPtr, String relation, String actor);
     private native DefraResult ACPGetNACStatusNative(long txnPtr, long identityPtr);
-    
+
+    // Backup Methods
+    private native DefraResult BasicExportNative(long txnPtr, String filepath, String collections, String format, boolean pretty);
+    private native DefraResult BasicImportNative(long txnPtr, String filepath);
+
+    // Block Verification
+    private native DefraResult VerifyBlockSignatureNative(long txnPtr, String keyType, String publicKey, String cid, long identityPtr);
+
     // Collection Methods
     private native DefraResult AddCollectionNative(long txnPtr, String sdl, long identityPtr);
     private native DefraResult DescribeCollectionNative(long txnPtr, DefraCollectionOptions options, long identityPtr);
     private native DefraResult PatchCollectionNative(long txnPtr, String patch, String lensConfig, long identityPtr);
     private native DefraResult SetActiveCollectionNative(long txnPtr, DefraCollectionOptions options, long identityPtr);
     private native DefraResult TruncateCollectionNative(long txnPtr, String filterJSON, DefraCollectionOptions options, long identityPtr);
-    
+
+    // Debug Methods
+    private native DefraResult PrintDumpNative(long txnPtr);
+
     // Document Methods
     private native DefraResult AddDocumentNative(long txnPtr, String json, boolean isEncrypted, String encryptedFields, DefraCollectionOptions options, long identityPtr);
     private native DefraResult DeleteDocumentNative(long txnPtr, String docID, String filter, DefraCollectionOptions options, long identityPtr);
     private native DefraResult GetDocumentNative(long txnPtr, String docID, boolean showDeleted, DefraCollectionOptions options, long identityPtr);
     private native DefraResult UpdateDocumentNative(long txnPtr, String docID, String filter, String updater, DefraCollectionOptions options, long identityPtr);
-    
+
     // Encrypted Index Methods
-    private native DefraResult NewEncryptedIndexNative(long txnPtr, String collectionName, String fieldName, String indexType, long identityPtr);
-    private native DefraResult ListEncryptedIndexesNative(long txnPtr, String collectionName, long identityPtr);
     private native DefraResult DeleteEncryptedIndexNative(long txnPtr, String collectionName, String fieldName, long identityPtr);
-    
-    // Index Methods
-    private native DefraResult NewIndexNative(long txnPtr, String indexName, String fields, boolean isUnique, String vectorJSON, DefraCollectionOptions options, long identityPtr);
-    private native DefraResult ListIndexesNative(long txnPtr, DefraCollectionOptions options, long identityPtr);
-    private native DefraResult DeleteIndexNative(long txnPtr, String indexName, DefraCollectionOptions options, long identityPtr);
-    
+    private native DefraResult ListEncryptedIndexesNative(long txnPtr, String collectionName, long identityPtr);
+    private native DefraResult NewEncryptedIndexNative(long txnPtr, String collectionName, String fieldName, String indexType, long identityPtr);
+
     // Identity Methods
     private native DefraResult GetNodeIdentityNative(long txnPtr);
-    
+
+    // Index Methods
+    private native DefraResult DeleteIndexNative(long txnPtr, String indexName, DefraCollectionOptions options, long identityPtr);
+    private native DefraResult ListIndexesNative(long txnPtr, DefraCollectionOptions options, long identityPtr);
+    private native DefraResult NewIndexNative(long txnPtr, String indexName, String fields, boolean isUnique, String vectorJSON, DefraCollectionOptions options, long identityPtr);
+
     // Lens Methods
-    private native DefraResult SetLensNative(long txnPtr, long identityPtr, String src, String dst, String cfg);
     private native DefraResult AddLensNative(long txnPtr, long identityPtr, String cfg);
     private native DefraResult ListLensesNative(long txnPtr, long identityPtr);
-
-    // Backup Methods
-    private native DefraResult BasicImportNative(long txnPtr, String filepath);
-    private native DefraResult BasicExportNative(long txnPtr, String filepath, String collections, String format, boolean pretty);
-
-    // Debug Methods
-    private native DefraResult PrintDumpNative(long txnPtr);
+    private native DefraResult SetLensNative(long txnPtr, long identityPtr, String src, String dst, String cfg);
 
     // Query Methods
     private native DefraResult ExecuteQueryNative(long txnPtr, String query, long identityPtr, String operationName, String variables);
-    
+
+    // Transaction Methods
+    private native DefraResult TransactionCommitNative(long txnPtr);
+    private native void TransactionDiscardNative(long txnPtr);
+
     // View Methods
     private native DefraResult AddViewNative(long txnPtr, String query, String sdl, String transformCID, long identityPtr);
     private native DefraResult RefreshViewNative(long txnPtr, DefraCollectionOptions options, long identityPtr);
-    
-    // Block Verification
-    private native DefraResult VerifyBlockSignatureNative(long txnPtr, String keyType, String publicKey, String cid, long identityPtr);
-    
+
+    // Added with the Rust C API
+    private native DefraResult BatchStartNative(long txnPtr, long identityPtr);
+    private native DefraResult BatchSignNative(long txnPtr, long identityPtr);
+    private native DefraResult SaveDocumentsNative(long txnPtr, String json, boolean isEncrypted, String encryptedFields, DefraCollectionOptions options, long identityPtr);
+    private native DefraResult PurgeDocumentsNative(long txnPtr, String docIDsJSON, DefraCollectionOptions options, long identityPtr);
+    private native void ExecuteQueryAsyncNative(long txnPtr, String query, long identityPtr, String operationName, String variables, long callbackHandle);
+
     private long txnPtr;
 
     /**
@@ -193,7 +200,7 @@ public class DefraTransaction {
             throw new DefraException(result.error);
         }
         return result.value;
-    }   
+    }
 
     /**
      * Deletes an actor relationship from a document access-control policy within this transaction.
@@ -397,6 +404,74 @@ public class DefraTransaction {
         return result.value;
     }
 
+    // Backup Methods
+    /**
+     * Exports the current data, or a subset of it, to a file within this transaction.
+     *
+     * @param filepath path to the file to export to
+     * @param collections names of the collections to export; all collections are exported if empty
+     * @param format export format, or an empty string for the default (JSON)
+     * @param pretty whether to pretty-print the output
+     * @throws DefraException if DefraDB rejects the operation
+     */
+    public void basicExport(String filepath, String[] collections, String format, boolean pretty) throws DefraException {
+        DefraResult result = BasicExportNative(this.txnPtr, filepath, String.join(",", collections), format, pretty);
+        if (result.status != 0) {
+            throw new DefraException(result.error);
+        }
+    }
+
+    /**
+     * Imports a JSON dataset from a file within this transaction.
+     *
+     * @param filepath path to the file to import, which must be accessible to the node
+     * @throws DefraException if DefraDB rejects the operation
+     */
+    public void basicImport(String filepath) throws DefraException {
+        DefraResult result = BasicImportNative(this.txnPtr, filepath);
+        if (result.status != 0) {
+            throw new DefraException(result.error);
+        }
+    }
+
+    // Block Verification
+    /**
+     * Verifies the signature of a block within this transaction.
+     *
+     * @param keyType key type supported by DefraDB
+     * @param publicKey public key encoded as hexadecimal
+     * @param cid content identifier of the block
+     * @return the native operation result
+     * @throws DefraException if DefraDB rejects the operation
+     */
+    public String verifyBlockSignature(String keyType, String publicKey, String cid) throws DefraException {
+        DefraResult result = VerifyBlockSignatureNative(this.txnPtr, keyType, publicKey, cid, 0);
+        if (result.status != 0) {
+            throw new DefraException(result.error);
+        }
+        return result.value;
+    }
+
+    /**
+     * Verifies the signature of a block within this transaction.
+     *
+     * <p>If an identity parameter is present, it authorizes this operation.</p>
+     *
+     * @param keyType key type supported by DefraDB
+     * @param publicKey public key encoded as hexadecimal
+     * @param cid content identifier of the block
+     * @param identity identity authorizing the operation
+     * @return the native operation result
+     * @throws DefraException if DefraDB rejects the operation
+     */
+    public String verifyBlockSignature(String keyType, String publicKey, String cid, DefraIdentity identity) throws DefraException {
+        DefraResult result = VerifyBlockSignatureNative(this.txnPtr, keyType, publicKey, cid, identity.getPointer());
+        if (result.status != 0) {
+            throw new DefraException(result.error);
+        }
+        return result.value;
+    }
+
     // Collection Methods
     /**
      * Adds collection definitions from Schema Definition Language (SDL) within this transaction.
@@ -565,54 +640,20 @@ public class DefraTransaction {
         return result.value;
     }
 
-        // Helper function for getCollectionByName functions
-    private DefraCollection getCollectionByNameWithIdentityPointer(String name, long identityPtr) throws DefraException {
-		DefraCollectionOptions copts = new DefraCollectionOptions();
-		copts.name = name;
-		DefraResult describeResult = DescribeCollectionNative(this.txnPtr, copts, identityPtr);
-		if (describeResult.status != 0) {
-			throw new DefraException(describeResult.error);
-		}
-        String collectionID = "";
-        String versionID = "";
-        try {
-            JSONArray array = new JSONArray(describeResult.value);
-            if (array.length() == 0) {
-            throw new DefraException("Collection with name '" + name + "' not found");
-            }
-            JSONObject first = array.getJSONObject(0);
-            collectionID = first.getString("CollectionID");
-            versionID = first.getString("VersionID");
-        } catch (JSONException e) {
-            throw new DefraException(e.getMessage());
+    // Debug Methods
+    /**
+     * Logs the entire contents of the store as seen by this transaction.
+     *
+     * <p>It is likely unwise to call this on a large database.</p>
+     *
+     * @throws DefraException if DefraDB rejects the operation
+     */
+    public void printDump() throws DefraException {
+        DefraResult result = PrintDumpNative(this.txnPtr);
+        if (result.status != 0) {
+            throw new DefraException(result.error);
         }
-		return new DefraCollection(this.txnPtr, name, collectionID, versionID);
     }
-	
-	/**
-	 * Returns a handle for the active collection with the given name within this transaction.
-	 *
-	 * @param name collection name
-	 * @return a handle to the active collection
-	 * @throws DefraException if DefraDB rejects the operation
-	 */
-	public DefraCollection getCollectionByName(String name) throws DefraException {
-		return getCollectionByNameWithIdentityPointer(name, 0);		
-	}
-	
-	/**
-	 * Returns a handle for the active collection with the given name within this transaction.
-	 *
-	 * <p>If an identity parameter is present, it authorizes this operation.</p>
-	 *
-	 * @param name collection name
-	 * @param identity identity authorizing the operation
-	 * @return a handle to the active collection
-	 * @throws DefraException if DefraDB rejects the operation
-	 */
-	public DefraCollection getCollectionByName(String name, DefraIdentity identity) throws DefraException {
-		return getCollectionByNameWithIdentityPointer(name, identity.getPointer());
-	}
 
     // Document Methods
     /**
@@ -759,7 +800,7 @@ public class DefraTransaction {
      * @return the native operation result
      * @throws DefraException if DefraDB rejects the operation
      */
-    public String updateDocument(String docID, String filter, String updater, DefraCollectionOptions options, DefraIdentity identity) throws DefraException{
+    public String updateDocument(String docID, String filter, String updater, DefraCollectionOptions options, DefraIdentity identity) throws DefraException {
         DefraResult result = UpdateDocumentNative(this.txnPtr, docID, filter, updater, options, identity.getPointer());
         if (result.status != 0) {
             throw new DefraException(result.error);
@@ -769,15 +810,15 @@ public class DefraTransaction {
 
     // Encrypted Index Methods
     /**
-     * Creates an encrypted index on a collection field within this transaction.
+     * Deletes an encrypted index from a collection field within this transaction.
      *
      * @param collectionName collection name
      * @param fieldName field name
      * @return the native operation result
      * @throws DefraException if DefraDB rejects the operation
      */
-    public String newEncryptedIndex(String collectionName, String fieldName) throws DefraException {
-        DefraResult result = NewEncryptedIndexNative(this.txnPtr, collectionName, fieldName, null, 0);
+    public String deleteEncryptedIndex(String collectionName, String fieldName) throws DefraException {
+        DefraResult result = DeleteEncryptedIndexNative(this.txnPtr, collectionName, fieldName, 0);
         if (result.status != 0) {
             throw new DefraException(result.error);
         }
@@ -785,7 +826,7 @@ public class DefraTransaction {
     }
 
     /**
-     * Creates an encrypted index on a collection field within this transaction.
+     * Deletes an encrypted index from a collection field within this transaction.
      *
      * <p>If an identity parameter is present, it authorizes this operation.</p>
      *
@@ -795,8 +836,8 @@ public class DefraTransaction {
      * @return the native operation result
      * @throws DefraException if DefraDB rejects the operation
      */
-    public String newEncryptedIndex(String collectionName, String fieldName, DefraIdentity identity) throws DefraException {
-        DefraResult result = NewEncryptedIndexNative(this.txnPtr, collectionName, fieldName, null, identity.getPointer());
+    public String deleteEncryptedIndex(String collectionName, String fieldName, DefraIdentity identity) throws DefraException {
+        DefraResult result = DeleteEncryptedIndexNative(this.txnPtr, collectionName, fieldName, identity.getPointer());
         if (result.status != 0) {
             throw new DefraException(result.error);
         }
@@ -837,15 +878,15 @@ public class DefraTransaction {
     }
 
     /**
-     * Deletes an encrypted index from a collection field within this transaction.
+     * Creates an encrypted index on a collection field within this transaction.
      *
      * @param collectionName collection name
      * @param fieldName field name
      * @return the native operation result
      * @throws DefraException if DefraDB rejects the operation
      */
-    public String deleteEncryptedIndex(String collectionName, String fieldName) throws DefraException {
-        DefraResult result = DeleteEncryptedIndexNative(this.txnPtr, collectionName, fieldName, 0);
+    public String newEncryptedIndex(String collectionName, String fieldName) throws DefraException {
+        DefraResult result = NewEncryptedIndexNative(this.txnPtr, collectionName, fieldName, null, 0);
         if (result.status != 0) {
             throw new DefraException(result.error);
         }
@@ -853,7 +894,7 @@ public class DefraTransaction {
     }
 
     /**
-     * Deletes an encrypted index from a collection field within this transaction.
+     * Creates an encrypted index on a collection field within this transaction.
      *
      * <p>If an identity parameter is present, it authorizes this operation.</p>
      *
@@ -863,8 +904,23 @@ public class DefraTransaction {
      * @return the native operation result
      * @throws DefraException if DefraDB rejects the operation
      */
-    public String deleteEncryptedIndex(String collectionName, String fieldName, DefraIdentity identity) throws DefraException {
-        DefraResult result = DeleteEncryptedIndexNative(this.txnPtr, collectionName, fieldName, identity.getPointer());
+    public String newEncryptedIndex(String collectionName, String fieldName, DefraIdentity identity) throws DefraException {
+        DefraResult result = NewEncryptedIndexNative(this.txnPtr, collectionName, fieldName, null, identity.getPointer());
+        if (result.status != 0) {
+            throw new DefraException(result.error);
+        }
+        return result.value;
+    }
+
+    // Identity Methods
+    /**
+     * Returns the public identity of the node as JSON within this transaction.
+     *
+     * @return the native operation result
+     * @throws DefraException if DefraDB rejects the operation
+     */
+    public String getNodeIdentity() throws DefraException {
+        DefraResult result = GetNodeIdentityNative(this.txnPtr);
         if (result.status != 0) {
             throw new DefraException(result.error);
         }
@@ -873,17 +929,15 @@ public class DefraTransaction {
 
     // Index Methods
     /**
-     * Creates an index on the selected collection within this transaction.
+     * Deletes an index from the selected collection within this transaction.
      *
      * @param indexName index name
-     * @param fields comma-separated fields with optional ASC or DESC order
-     * @param isUnique whether indexed values must be unique
      * @param options collection selector and operation options
      * @return the native operation result
      * @throws DefraException if DefraDB rejects the operation
      */
-    public String newIndex(String indexName, String fields, boolean isUnique, DefraCollectionOptions options) throws DefraException {
-        DefraResult result = NewIndexNative(this.txnPtr, indexName, fields, isUnique, null, options, 0);
+    public String deleteIndex(String indexName, DefraCollectionOptions options) throws DefraException {
+        DefraResult result = DeleteIndexNative(this.txnPtr, indexName, options, 0);
         if (result.status != 0) {
             throw new DefraException(result.error);
         }
@@ -891,20 +945,18 @@ public class DefraTransaction {
     }
 
     /**
-     * Creates an index on the selected collection within this transaction.
+     * Deletes an index from the selected collection within this transaction.
      *
      * <p>If an identity parameter is present, it authorizes this operation.</p>
      *
      * @param indexName index name
-     * @param fields comma-separated fields with optional ASC or DESC order
-     * @param isUnique whether indexed values must be unique
      * @param options collection selector and operation options
      * @param identity identity authorizing the operation
      * @return the native operation result
      * @throws DefraException if DefraDB rejects the operation
      */
-    public String newIndex(String indexName, String fields, boolean isUnique, DefraCollectionOptions options, DefraIdentity identity) throws DefraException {
-        DefraResult result = NewIndexNative(this.txnPtr, indexName, fields, isUnique, null, options, identity.getPointer());
+    public String deleteIndex(String indexName, DefraCollectionOptions options, DefraIdentity identity) throws DefraException {
+        DefraResult result = DeleteIndexNative(this.txnPtr, indexName, options, identity.getPointer());
         if (result.status != 0) {
             throw new DefraException(result.error);
         }
@@ -945,15 +997,17 @@ public class DefraTransaction {
     }
 
     /**
-     * Deletes an index from the selected collection within this transaction.
+     * Creates an index on the selected collection within this transaction.
      *
      * @param indexName index name
+     * @param fields comma-separated fields with optional ASC or DESC order
+     * @param isUnique whether indexed values must be unique
      * @param options collection selector and operation options
      * @return the native operation result
      * @throws DefraException if DefraDB rejects the operation
      */
-    public String deleteIndex(String indexName, DefraCollectionOptions options) throws DefraException {
-        DefraResult result = DeleteIndexNative(this.txnPtr, indexName, options, 0);
+    public String newIndex(String indexName, String fields, boolean isUnique, DefraCollectionOptions options) throws DefraException {
+        DefraResult result = NewIndexNative(this.txnPtr, indexName, fields, isUnique, null, options, 0);
         if (result.status != 0) {
             throw new DefraException(result.error);
         }
@@ -961,33 +1015,20 @@ public class DefraTransaction {
     }
 
     /**
-     * Deletes an index from the selected collection within this transaction.
+     * Creates an index on the selected collection within this transaction.
      *
      * <p>If an identity parameter is present, it authorizes this operation.</p>
      *
      * @param indexName index name
+     * @param fields comma-separated fields with optional ASC or DESC order
+     * @param isUnique whether indexed values must be unique
      * @param options collection selector and operation options
      * @param identity identity authorizing the operation
      * @return the native operation result
      * @throws DefraException if DefraDB rejects the operation
      */
-    public String deleteIndex(String indexName, DefraCollectionOptions options, DefraIdentity identity) throws DefraException {
-        DefraResult result = DeleteIndexNative(this.txnPtr, indexName, options, identity.getPointer());
-        if (result.status != 0) {
-            throw new DefraException(result.error);
-        }
-        return result.value;
-    }
-
-    // Identity Methods
-    /**
-     * Returns the public identity of the node as JSON within this transaction.
-     *
-     * @return the native operation result
-     * @throws DefraException if DefraDB rejects the operation
-     */
-    public String getNodeIdentity() throws DefraException {
-        DefraResult result = GetNodeIdentityNative(this.txnPtr);
+    public String newIndex(String indexName, String fields, boolean isUnique, DefraCollectionOptions options, DefraIdentity identity) throws DefraException {
+        DefraResult result = NewIndexNative(this.txnPtr, indexName, fields, isUnique, null, options, identity.getPointer());
         if (result.status != 0) {
             throw new DefraException(result.error);
         }
@@ -995,43 +1036,6 @@ public class DefraTransaction {
     }
 
     // Lens Methods
-    /**
-     * Sets a migration lens between collection versions within this transaction.
-     *
-     * @param src source collection version identifier
-     * @param dst destination collection version identifier
-     * @param cfg lens configuration encoded as JSON
-     * @return the native operation result
-     * @throws DefraException if DefraDB rejects the operation
-     */
-    public String setLens(String src, String dst, String cfg) throws DefraException {
-        DefraResult result = SetLensNative(this.txnPtr, 0, src, dst, cfg);
-        if (result.status != 0) {
-            throw new DefraException(result.error);
-        }
-        return result.value;
-    }
-
-    /**
-     * Sets a migration lens between collection versions within this transaction.
-     *
-     * <p>If an identity parameter is present, it authorizes this operation.</p>
-     *
-     * @param src source collection version identifier
-     * @param dst destination collection version identifier
-     * @param cfg lens configuration encoded as JSON
-     * @param identity identity authorizing the operation
-     * @return the native operation result
-     * @throws DefraException if DefraDB rejects the operation
-     */
-    public String setLens(String src, String dst, String cfg, DefraIdentity identity) throws DefraException {
-        DefraResult result = SetLensNative(this.txnPtr, identity.getPointer(), src, dst, cfg);
-        if (result.status != 0) {
-            throw new DefraException(result.error);
-        }
-        return result.value;
-    }
-
     /**
      * Adds a lens from its configuration within this transaction.
      *
@@ -1096,59 +1100,41 @@ public class DefraTransaction {
         return result.value;
     }
 
-    // Backup Methods
     /**
-     * Imports a JSON dataset from a file within this transaction.
+     * Sets a migration lens between collection versions within this transaction.
      *
-     * @param filepath path to the file to import, which must be accessible to the node
+     * @param src source collection version identifier
+     * @param dst destination collection version identifier
+     * @param cfg lens configuration encoded as JSON
+     * @return the native operation result
      * @throws DefraException if DefraDB rejects the operation
      */
-    public void basicImport(String filepath) throws DefraException {
-        DefraResult result = BasicImportNative(this.txnPtr, filepath);
+    public String setLens(String src, String dst, String cfg) throws DefraException {
+        DefraResult result = SetLensNative(this.txnPtr, 0, src, dst, cfg);
         if (result.status != 0) {
             throw new DefraException(result.error);
         }
+        return result.value;
     }
 
     /**
-     * Exports all collections to a file in JSON format within this transaction.
+     * Sets a migration lens between collection versions within this transaction.
      *
-     * @param filepath path to the file to export to
+     * <p>If an identity parameter is present, it authorizes this operation.</p>
+     *
+     * @param src source collection version identifier
+     * @param dst destination collection version identifier
+     * @param cfg lens configuration encoded as JSON
+     * @param identity identity authorizing the operation
+     * @return the native operation result
      * @throws DefraException if DefraDB rejects the operation
      */
-    public void basicExport(String filepath) throws DefraException {
-        basicExport(filepath, new String[0], "", false);
-    }
-
-    /**
-     * Exports the current data, or a subset of it, to a file within this transaction.
-     *
-     * @param filepath path to the file to export to
-     * @param collections names of the collections to export; all collections are exported if empty
-     * @param format export format, or an empty string for the default (JSON)
-     * @param pretty whether to pretty-print the output
-     * @throws DefraException if DefraDB rejects the operation
-     */
-    public void basicExport(String filepath, String[] collections, String format, boolean pretty) throws DefraException {
-        DefraResult result = BasicExportNative(this.txnPtr, filepath, String.join(",", collections), format, pretty);
+    public String setLens(String src, String dst, String cfg, DefraIdentity identity) throws DefraException {
+        DefraResult result = SetLensNative(this.txnPtr, identity.getPointer(), src, dst, cfg);
         if (result.status != 0) {
             throw new DefraException(result.error);
         }
-    }
-
-    // Debug Methods
-    /**
-     * Logs the entire contents of the store as seen by this transaction.
-     *
-     * <p>It is likely unwise to call this on a large database.</p>
-     *
-     * @throws DefraException if DefraDB rejects the operation
-     */
-    public void printDump() throws DefraException {
-        DefraResult result = PrintDumpNative(this.txnPtr);
-        if (result.status != 0) {
-            throw new DefraException(result.error);
-        }
+        return result.value;
     }
 
     // Query Methods
@@ -1260,42 +1246,63 @@ public class DefraTransaction {
         return result.value;
     }
 
-    // Block Verification
-    /**
-     * Verifies the signature of a block within this transaction.
-     *
-     * @param keyType key type supported by DefraDB
-     * @param publicKey public key encoded as hexadecimal
-     * @param cid content identifier of the block
-     * @return the native operation result
-     * @throws DefraException if DefraDB rejects the operation
-     */
-    public String verifyBlockSignature(String keyType, String publicKey, String cid) throws DefraException {
-        DefraResult result = VerifyBlockSignatureNative(this.txnPtr, keyType, publicKey, cid, 0);
-        if (result.status != 0) {
-            throw new DefraException(result.error);
+        // Helper function for getCollectionByName functions
+    private DefraCollection getCollectionByNameWithIdentityPointer(String name, long identityPtr) throws DefraException {
+		DefraCollectionOptions copts = new DefraCollectionOptions();
+		copts.name = name;
+		DefraResult describeResult = DescribeCollectionNative(this.txnPtr, copts, identityPtr);
+		if (describeResult.status != 0) {
+			throw new DefraException(describeResult.error);
+		}
+        String collectionID = "";
+        String versionID = "";
+        try {
+            JSONArray array = new JSONArray(describeResult.value);
+            if (array.length() == 0) {
+            throw new DefraException("Collection with name '" + name + "' not found");
+            }
+            JSONObject first = array.getJSONObject(0);
+            collectionID = first.getString("CollectionID");
+            versionID = first.getString("VersionID");
+        } catch (JSONException e) {
+            throw new DefraException(e.getMessage());
         }
-        return result.value;
+		return new DefraCollection(this.txnPtr, name, collectionID, versionID);
     }
+	
+	/**
+	 * Returns a handle for the active collection with the given name within this transaction.
+	 *
+	 * @param name collection name
+	 * @return a handle to the active collection
+	 * @throws DefraException if DefraDB rejects the operation
+	 */
+	public DefraCollection getCollectionByName(String name) throws DefraException {
+		return getCollectionByNameWithIdentityPointer(name, 0);		
+	}
+	
+	/**
+	 * Returns a handle for the active collection with the given name within this transaction.
+	 *
+	 * <p>If an identity parameter is present, it authorizes this operation.</p>
+	 *
+	 * @param name collection name
+	 * @param identity identity authorizing the operation
+	 * @return a handle to the active collection
+	 * @throws DefraException if DefraDB rejects the operation
+	 */
+	public DefraCollection getCollectionByName(String name, DefraIdentity identity) throws DefraException {
+		return getCollectionByNameWithIdentityPointer(name, identity.getPointer());
+	}
 
     /**
-     * Verifies the signature of a block within this transaction.
+     * Exports all collections to a file in JSON format within this transaction.
      *
-     * <p>If an identity parameter is present, it authorizes this operation.</p>
-     *
-     * @param keyType key type supported by DefraDB
-     * @param publicKey public key encoded as hexadecimal
-     * @param cid content identifier of the block
-     * @param identity identity authorizing the operation
-     * @return the native operation result
+     * @param filepath path to the file to export to
      * @throws DefraException if DefraDB rejects the operation
      */
-    public String verifyBlockSignature(String keyType, String publicKey, String cid, DefraIdentity identity) throws DefraException {
-        DefraResult result = VerifyBlockSignatureNative(this.txnPtr, keyType, publicKey, cid, identity.getPointer());
-        if (result.status != 0) {
-            throw new DefraException(result.error);
-        }
-        return result.value;
+    public void basicExport(String filepath) throws DefraException {
+        basicExport(filepath, new String[0], "", false);
     }
 
     // Function is a getter for the transaction pointer
@@ -1306,4 +1313,85 @@ public class DefraTransaction {
     public long getPointer() {
         return this.txnPtr;
     }
-}
+
+    private static long pointer(DefraIdentity identity) {
+        return identity == null ? 0 : identity.getPointer();
+    }
+
+    private static String value(DefraResult result) throws DefraException {
+        if (result.status != 0) {
+            throw new DefraException(result.error);
+        }
+        return result.value;
+    }
+
+    /**
+     * Starts collecting the blocks the caller's writes in this transaction
+     * create, so that {@link #batchSign(DefraIdentity)} signs them together.
+     *
+     * @param identity the caller's identity, or null for none
+     * @return the native JSON result
+     * @throws DefraException if DefraDB rejects the operation
+     */
+    public String batchStart(DefraIdentity identity) throws DefraException {
+        return value(BatchStartNative(this.txnPtr, pointer(identity)));
+    }
+
+    /**
+     * Signs the blocks collected since {@link #batchStart(DefraIdentity)}.
+     *
+     * @param identity the caller's identity, or null for none
+     * @return the native JSON result
+     * @throws DefraException if DefraDB rejects the operation
+     */
+    public String batchSign(DefraIdentity identity) throws DefraException {
+        return value(BatchSignNative(this.txnPtr, pointer(identity)));
+    }
+
+    /**
+     * Saves each document of a JSON array in this transaction: added if new,
+     * updated if it exists.
+     *
+     * @param json the documents, as a JSON array of objects
+     * @param isEncrypted whether to encrypt every field
+     * @param encryptedFields comma-separated fields to encrypt, or an empty string
+     * @param options the collection to save into
+     * @param identity the caller's identity, or null for none
+     * @return the native JSON result
+     * @throws DefraException if DefraDB rejects the operation
+     */
+    public String saveDocuments(String json, boolean isEncrypted, String encryptedFields, DefraCollectionOptions options, DefraIdentity identity) throws DefraException {
+        return value(SaveDocumentsNative(this.txnPtr, json, isEncrypted, encryptedFields, options, pointer(identity)));
+    }
+
+    /**
+     * Permanently removes documents and their history from this node, when
+     * this transaction commits; nothing is replicated.
+     *
+     * @param docIDs the documents to remove
+     * @param options the collection holding them
+     * @param identity the caller's identity, or null for none
+     * @return the native JSON result, {@code {"Count": n}}
+     * @throws DefraException if DefraDB rejects the operation
+     */
+    public String purgeDocuments(String[] docIDs, DefraCollectionOptions options, DefraIdentity identity) throws DefraException {
+        return value(PurgeDocumentsNative(this.txnPtr, new JSONArray(docIDs).toString(), options, pointer(identity)));
+    }
+
+    /**
+     * Executes a GraphQL request in this transaction without blocking the
+     * calling thread.
+     *
+     * @param query the GraphQL request
+     * @param operationName the operation to run, or an empty string
+     * @param variables the variables as a JSON object, or an empty string
+     * @param identity the caller's identity, or null for none
+     * @return a future completed with the JSON response, or exceptionally
+     *     with a {@link DefraException}
+     */
+    public java.util.concurrent.CompletableFuture<String> executeQueryAsync(String query, String operationName, String variables, DefraIdentity identity) {
+        java.util.concurrent.CompletableFuture<DefraResult> raw = new java.util.concurrent.CompletableFuture<>();
+        ExecuteQueryAsyncNative(this.txnPtr, query, pointer(identity), operationName, variables, NativeCallbacks.pendingQuery(raw));
+        return NativeCallbacks.values(raw);
+    }
+}

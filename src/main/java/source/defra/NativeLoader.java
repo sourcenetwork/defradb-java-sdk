@@ -28,15 +28,9 @@ class NativeLoader {
 
     private static File tempDir;
 
-    // When "defra.native.external" is set the Go test harness has already loaded
-    // libnativewrapper.so (with symbols resolved from the test binary). Skip
-    // extraction and System.load so we don't trigger loading a second Go runtime.
     static synchronized void load(String libName) {
         if (IS_ANDROID) {
             System.loadLibrary(libName);
-            return;
-        }
-        if (System.getProperty("defra.native.external") != null) {
             return;
         }
         try {

@@ -23,22 +23,26 @@ public class DefraCollection {
         NativeLoader.load("nativewrapper");
     }
 	
-	// Document Methods
+    // Document Methods
     private native DefraResult AddDocumentNative(long nodePtr, String json, boolean isEncrypted, String encryptedFields, DefraCollectionOptions options, long identityPtr);
     private native DefraResult DeleteDocumentNative(long nodePtr, String docID, String filter, DefraCollectionOptions options, long identityPtr);
     private native DefraResult GetDocumentNative(long nodePtr, String docID, boolean showDeleted, DefraCollectionOptions options, long identityPtr);
     private native DefraResult UpdateDocumentNative(long nodePtr, String docID, String filter, String updater, DefraCollectionOptions options, long identityPtr);
-    
+
     // Encrypted Index Methods
-    private native DefraResult NewEncryptedIndexNative(long nodePtr, String collectionName, String fieldName, String indexType, long identityPtr);
-    private native DefraResult ListEncryptedIndexesNative(long nodePtr, String collectionName, long identityPtr);
     private native DefraResult DeleteEncryptedIndexNative(long nodePtr, String collectionName, String fieldName, long identityPtr);
-    
+    private native DefraResult ListEncryptedIndexesNative(long nodePtr, String collectionName, long identityPtr);
+    private native DefraResult NewEncryptedIndexNative(long nodePtr, String collectionName, String fieldName, String indexType, long identityPtr);
+
     // Index Methods
-    private native DefraResult NewIndexNative(long nodePtr, String indexName, String fields, boolean isUnique, String vectorJSON, DefraCollectionOptions options, long identityPtr);
-    private native DefraResult ListIndexesNative(long nodePtr, DefraCollectionOptions options, long identityPtr);
     private native DefraResult DeleteIndexNative(long nodePtr, String indexName, DefraCollectionOptions options, long identityPtr);
-    
+    private native DefraResult ListIndexesNative(long nodePtr, DefraCollectionOptions options, long identityPtr);
+    private native DefraResult NewIndexNative(long nodePtr, String indexName, String fields, boolean isUnique, String vectorJSON, DefraCollectionOptions options, long identityPtr);
+
+    // Added with the Rust C API
+    private native DefraResult SaveDocumentsNative(long nodePtr, String json, boolean isEncrypted, String encryptedFields, DefraCollectionOptions options, long identityPtr);
+    private native DefraResult PurgeDocumentsNative(long nodePtr, String docIDsJSON, DefraCollectionOptions options, long identityPtr);
+
 	private String name;
 	private String collectionID;
 	private String versionID;
@@ -129,16 +133,16 @@ public class DefraCollection {
         }
         return result.value;
     }
-	
-	/**
-	 * Deletes the document matching an ID and optional filter.
-	 *
-	 * @param docID document identifier
-	 * @param filter JSON filter that must match, or an empty string
-	 * @return the native JSON deletion result
-	 * @throws DefraException if DefraDB rejects the operation
-	 */
-	public String deleteDocument(String docID, String filter) throws DefraException {
+
+    /**
+     * Deletes the document matching an ID and optional filter.
+     *
+     * @param docID document identifier
+     * @param filter JSON filter that must match, or an empty string
+     * @return the native JSON deletion result
+     * @throws DefraException if DefraDB rejects the operation
+     */
+    public String deleteDocument(String docID, String filter) throws DefraException {
         DefraResult result = DeleteDocumentNative(this.storePtr, docID, filter, collectionOptionsFromThis(), 0);
         if (result.status != 0) {
             throw new DefraException(result.error);
@@ -151,12 +155,11 @@ public class DefraCollection {
      *
      * @param docID document identifier
      * @param filter JSON filter that must match, or an empty string
-     * @param options ignored; this handle's collection identifiers are used
      * @param identity identity authorizing the operation
      * @return the native JSON deletion result
      * @throws DefraException if DefraDB rejects the operation
      */
-    public String deleteDocument(String docID, String filter, DefraCollectionOptions options, DefraIdentity identity) throws DefraException {
+    public String deleteDocument(String docID, String filter, DefraIdentity identity) throws DefraException {
         DefraResult result = DeleteDocumentNative(this.storePtr, docID, filter, collectionOptionsFromThis(), identity.getPointer());
         if (result.status != 0) {
             throw new DefraException(result.error);
@@ -234,15 +237,15 @@ public class DefraCollection {
 
     // Encrypted Index Methods
     /**
-     * Creates an encrypted index on a collection field.
+     * Deletes an encrypted index from a collection field.
      *
      * @param collectionName collection name
      * @param fieldName indexed field name
-     * @return the encrypted-index description encoded as JSON
+     * @return the native JSON result
      * @throws DefraException if DefraDB rejects the operation
      */
-    public String newEncryptedIndex(String collectionName, String fieldName) throws DefraException {
-        DefraResult result = NewEncryptedIndexNative(this.storePtr, collectionName, fieldName, null, 0);
+    public String deleteEncryptedIndex(String collectionName, String fieldName) throws DefraException {
+        DefraResult result = DeleteEncryptedIndexNative(this.storePtr, collectionName, fieldName, 0);
         if (result.status != 0) {
             throw new DefraException(result.error);
         }
@@ -250,16 +253,16 @@ public class DefraCollection {
     }
 
     /**
-     * Creates an encrypted index on a collection field as an identity.
+     * Deletes an encrypted index from a collection field as an identity.
      *
      * @param collectionName collection name
      * @param fieldName indexed field name
      * @param identity identity authorizing the operation
-     * @return the encrypted-index description encoded as JSON
+     * @return the native JSON result
      * @throws DefraException if DefraDB rejects the operation
      */
-    public String newEncryptedIndex(String collectionName, String fieldName, DefraIdentity identity) throws DefraException {
-        DefraResult result = NewEncryptedIndexNative(this.storePtr, collectionName, fieldName, null, identity.getPointer());
+    public String deleteEncryptedIndex(String collectionName, String fieldName, DefraIdentity identity) throws DefraException {
+        DefraResult result = DeleteEncryptedIndexNative(this.storePtr, collectionName, fieldName, identity.getPointer());
         if (result.status != 0) {
             throw new DefraException(result.error);
         }
@@ -298,15 +301,15 @@ public class DefraCollection {
     }
 
     /**
-     * Deletes an encrypted index from a collection field.
+     * Creates an encrypted index on a collection field.
      *
      * @param collectionName collection name
      * @param fieldName indexed field name
-     * @return the native JSON result
+     * @return the encrypted-index description encoded as JSON
      * @throws DefraException if DefraDB rejects the operation
      */
-    public String deleteEncryptedIndex(String collectionName, String fieldName) throws DefraException {
-        DefraResult result = DeleteEncryptedIndexNative(this.storePtr, collectionName, fieldName, 0);
+    public String newEncryptedIndex(String collectionName, String fieldName) throws DefraException {
+        DefraResult result = NewEncryptedIndexNative(this.storePtr, collectionName, fieldName, null, 0);
         if (result.status != 0) {
             throw new DefraException(result.error);
         }
@@ -314,16 +317,16 @@ public class DefraCollection {
     }
 
     /**
-     * Deletes an encrypted index from a collection field as an identity.
+     * Creates an encrypted index on a collection field as an identity.
      *
      * @param collectionName collection name
      * @param fieldName indexed field name
      * @param identity identity authorizing the operation
-     * @return the native JSON result
+     * @return the encrypted-index description encoded as JSON
      * @throws DefraException if DefraDB rejects the operation
      */
-    public String deleteEncryptedIndex(String collectionName, String fieldName, DefraIdentity identity) throws DefraException {
-        DefraResult result = DeleteEncryptedIndexNative(this.storePtr, collectionName, fieldName, identity.getPointer());
+    public String newEncryptedIndex(String collectionName, String fieldName, DefraIdentity identity) throws DefraException {
+        DefraResult result = NewEncryptedIndexNative(this.storePtr, collectionName, fieldName, null, identity.getPointer());
         if (result.status != 0) {
             throw new DefraException(result.error);
         }
@@ -332,16 +335,14 @@ public class DefraCollection {
 
     // Index Methods
     /**
-     * Creates an index on this collection.
+     * Deletes an index from this collection.
      *
      * @param indexName index name
-     * @param fields comma-separated fields with optional {@code :ASC} or {@code :DESC} order
-     * @param isUnique whether indexed values must be unique
-     * @return the index description encoded as JSON
+     * @return the native JSON result
      * @throws DefraException if DefraDB rejects the operation
      */
-    public String newIndex(String indexName, String fields, boolean isUnique) throws DefraException {
-        DefraResult result = NewIndexNative(this.storePtr, indexName, fields, isUnique, null, collectionOptionsFromThis(), 0);
+    public String deleteIndex(String indexName) throws DefraException {
+        DefraResult result = DeleteIndexNative(this.storePtr, indexName, collectionOptionsFromThis(), 0);
         if (result.status != 0) {
             throw new DefraException(result.error);
         }
@@ -349,17 +350,15 @@ public class DefraCollection {
     }
 
     /**
-     * Creates an index on this collection as an identity.
+     * Deletes an index from this collection as an identity.
      *
      * @param indexName index name
-     * @param fields comma-separated fields with optional {@code :ASC} or {@code :DESC} order
-     * @param isUnique whether indexed values must be unique
      * @param identity identity authorizing the operation
-     * @return the index description encoded as JSON
+     * @return the native JSON result
      * @throws DefraException if DefraDB rejects the operation
      */
-    public String newIndex(String indexName, String fields, boolean isUnique, DefraIdentity identity) throws DefraException {
-        DefraResult result = NewIndexNative(this.storePtr, indexName, fields, isUnique, null, collectionOptionsFromThis(), identity.getPointer());
+    public String deleteIndex(String indexName, DefraIdentity identity) throws DefraException {
+        DefraResult result = DeleteIndexNative(this.storePtr, indexName, collectionOptionsFromThis(), identity.getPointer());
         if (result.status != 0) {
             throw new DefraException(result.error);
         }
@@ -396,14 +395,16 @@ public class DefraCollection {
     }
 
     /**
-     * Deletes an index from this collection.
+     * Creates an index on this collection.
      *
      * @param indexName index name
-     * @return the native JSON result
+     * @param fields comma-separated fields with optional {@code :ASC} or {@code :DESC} order
+     * @param isUnique whether indexed values must be unique
+     * @return the index description encoded as JSON
      * @throws DefraException if DefraDB rejects the operation
      */
-    public String deleteIndex(String indexName) throws DefraException {
-        DefraResult result = DeleteIndexNative(this.storePtr, indexName, collectionOptionsFromThis(), 0);
+    public String newIndex(String indexName, String fields, boolean isUnique) throws DefraException {
+        DefraResult result = NewIndexNative(this.storePtr, indexName, fields, isUnique, null, collectionOptionsFromThis(), 0);
         if (result.status != 0) {
             throw new DefraException(result.error);
         }
@@ -411,20 +412,56 @@ public class DefraCollection {
     }
 
     /**
-     * Deletes an index from this collection as an identity.
+     * Creates an index on this collection as an identity.
      *
      * @param indexName index name
+     * @param fields comma-separated fields with optional {@code :ASC} or {@code :DESC} order
+     * @param isUnique whether indexed values must be unique
      * @param identity identity authorizing the operation
-     * @return the native JSON result
+     * @return the index description encoded as JSON
      * @throws DefraException if DefraDB rejects the operation
      */
-    public String deleteIndex(String indexName, DefraIdentity identity) throws DefraException {
-        DefraResult result = DeleteIndexNative(this.storePtr, indexName, collectionOptionsFromThis(), identity.getPointer());
+    public String newIndex(String indexName, String fields, boolean isUnique, DefraIdentity identity) throws DefraException {
+        DefraResult result = NewIndexNative(this.storePtr, indexName, fields, isUnique, null, collectionOptionsFromThis(), identity.getPointer());
         if (result.status != 0) {
             throw new DefraException(result.error);
         }
         return result.value;
     }
-	
-	
+
+    /**
+     * Saves each document of a JSON array in this collection: added if new,
+     * updated if it exists.
+     *
+     * @param json the documents, as a JSON array of objects
+     * @param isEncrypted whether to encrypt every field
+     * @param encryptedFields comma-separated fields to encrypt, or an empty string
+     * @param identity the caller's identity, or null for none
+     * @return the native JSON result
+     * @throws DefraException if DefraDB rejects the operation
+     */
+    public String saveDocuments(String json, boolean isEncrypted, String encryptedFields, DefraIdentity identity) throws DefraException {
+        DefraResult result = SaveDocumentsNative(this.storePtr, json, isEncrypted, encryptedFields, collectionOptionsFromThis(), identity == null ? 0 : identity.getPointer());
+        if (result.status != 0) {
+            throw new DefraException(result.error);
+        }
+        return result.value;
+    }
+
+    /**
+     * Permanently removes documents of this collection and their history
+     * from this node only; nothing is replicated.
+     *
+     * @param docIDs the documents to remove
+     * @param identity the caller's identity, or null for none
+     * @return the native JSON result, {@code {"Count": n}}
+     * @throws DefraException if DefraDB rejects the operation
+     */
+    public String purgeDocuments(String[] docIDs, DefraIdentity identity) throws DefraException {
+        DefraResult result = PurgeDocumentsNative(this.storePtr, new org.json.JSONArray(docIDs).toString(), collectionOptionsFromThis(), identity == null ? 0 : identity.getPointer());
+        if (result.status != 0) {
+            throw new DefraException(result.error);
+        }
+        return result.value;
+    }
 }
