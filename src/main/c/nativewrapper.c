@@ -17,6 +17,9 @@
 // collection's store: the C API takes any of these handles in one argument,
 // so one C function serves each method in every class that declares it.
 
+// setenv, under -std=c11.
+#define _POSIX_C_SOURCE 200809L
+
 #include <jni.h>
 #include <pthread.h>
 #include <stdint.h>
@@ -1771,6 +1774,14 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
     if (pthread_key_create(&detach_key, detach_thread) != 0) {
         return JNI_ERR;
     }
+#ifdef __ANDROID__
+    // DefraDB's network runtime, nuclei, probes for io_uring at startup by
+    // calling io_uring_setup in a cloned child. Android's app seccomp filter
+    // answers that call with SIGSYS, which Android reports as a crash of the
+    // app and which ends it, and an app may not use io_uring anyway. Naming
+    // epoll skips the probe; an app that set the variable keeps its value.
+    setenv("NUCLEI_BACKEND", "epoll", 0);
+#endif
     // DefraDB's threads find no application classes through FindClass, so
     // the class they call back into is resolved here, once.
     jclass callbacks = (*env)->FindClass(env, "source/defra/NativeCallbacks");
