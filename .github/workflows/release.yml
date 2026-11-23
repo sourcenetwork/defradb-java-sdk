@@ -1,0 +1,42 @@
+name: Release Libraries
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      defradb_ref:
+        description: defradb.rs branch, tag, or commit (defaults to its default branch)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    uses: ./.github/workflows/build-libraries.yml
+    with:
+      defradb_ref: ${{ inputs.defradb_ref || '' }}
+
+  publish:
+    name: Attach libraries to release
+    if: github.event_name == 'release'
+    needs: build-and-test
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: defradb-*
+          path: dist
+          merge-multiple: true
+
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$RELEASE_TAG" dist/* --clobber
