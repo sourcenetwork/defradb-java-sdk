@@ -124,7 +124,9 @@ if [ "$android_present" = true ]; then
         env_triple="$(echo "$triple" | tr '[:lower:]-' '[:upper:]_')"
         cc_triple="${triple//-/_}"
         echo "Building libdefradb for Android $abi..."
-        rustup target add "$triple" >/dev/null
+        # Run in the checkout so the target goes to the toolchain its
+        # rust-toolchain.toml pins, the one cargo builds with there.
+        (cd "$defra_dir_abs" && rustup target add "$triple" >/dev/null)
         (
             cd "$defra_dir_abs"
             env \
