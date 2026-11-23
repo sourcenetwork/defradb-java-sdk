@@ -55,8 +55,11 @@ if [ "$android_present" = true ]; then
             x86_64) triple=x86_64-linux-android ;;
         esac
         mkdir -p "$JNI/$abi"
+        # No JDK includes: the NDK sysroot has Android's own jni.h, whose
+        # declarations differ from the JDK's (AttachCurrentThread takes a
+        # JNIEnv**, not a void**).
         "$NDK/toolchains/llvm/prebuilt/$HOST_TAG/bin/${triple}24-clang" \
-            "${CFLAGS[@]}" "${JNI_INCLUDES[@]}" \
+            "${CFLAGS[@]}" \
             -shared -o "$JNI/$abi/libnativewrapper.so" \
             nativewrapper.c \
             -L"$JNI/$abi" -ldefradb
