@@ -18,7 +18,7 @@ done
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
 JNI=../jniLibs
-CFLAGS=(-std=c11 -fPIC -O2 -Wall -Wextra -Werror)
+CFLAGS=(-std=c11 -fPIC -O2 -pthread -Wall -Wextra -Werror)
 
 if [ ! -f defra.h ]; then
     echo "Error: defra.h not found; run the top-level build.sh first"

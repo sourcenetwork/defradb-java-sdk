@@ -28,7 +28,7 @@ Android builds require JDK 17, Android SDK API 34, and an Android NDK with `ANDR
 The script:
 
 1. Generates `src/main/c/defra.h` from the checkout's `crates/entry-points/ffi` crate with `cbindgen`, using that crate's `cbindgen.toml`.
-2. Builds the crate with `cargo build --release -p ffi`, for the host or for `aarch64-linux-android` and `x86_64-linux-android` with the NDK's clang as linker. Cargo names the library `libffi`; the script stages it as `libdefradb`, the name the JNI wrapper links and `NativeLoader` extracts. `CARGO_TARGET_DIR` is respected.
+2. Builds the crate's shared library with `cargo rustc --release -p ffi --lib --crate-type cdylib`, for the host or for `aarch64-linux-android` and `x86_64-linux-android` with the NDK's clang as linker. Cargo names the library `libffi`; the script stages it as `libdefradb`, the name the JNI wrapper links and `NativeLoader` extracts, and on Linux and Android links it with that name as its `DT_SONAME`. `CARGO_TARGET_DIR` is respected.
 3. Compiles the JNI wrapper and packages the Java classes and native libraries. Desktop output is `build/libs/defradb.jar`, for the host architecture only. Android output is `build/outputs/aar/defradb-release.aar`, containing `arm64-v8a` and `x86_64` libraries.
 
 Options:

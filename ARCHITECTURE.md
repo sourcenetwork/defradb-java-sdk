@@ -33,7 +33,7 @@ defradb.rs
 Some calls hand DefraDB a C callback: asynchronous queries, remote signers (`DefraRemoteSigner`), and replication filters (`DefraReplicationFilter`). DefraDB invokes them on its own threads.
 
 - DefraDB receives numeric handles, never Java references. `NativeCallbacks` keeps the registries that map a handle back to its future, signer, or filter.
-- The wrapper attaches a DefraDB thread to the JVM as a daemon on its first callback and leaves it attached.
+- The wrapper attaches a DefraDB thread to the JVM as a daemon on its first callback, and a thread-specific key detaches it as the thread exits. A node's worker threads end when it closes, and Android aborts the process if an attached thread exits.
 - No DefraDB thread waits for Java code. Query results are delivered to a future on an SDK thread. Remote signing uses defradb.rs's asynchronous signer form: the wrapper returns immediately, the Java signer runs on an SDK thread, and its signature is handed back with `defra_remote_sign_complete`.
 - A registered remote signer stays referenced for the life of the process, because nodes keep signing through it after its identity handles are freed.
 

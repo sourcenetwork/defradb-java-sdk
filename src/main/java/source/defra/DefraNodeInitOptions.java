@@ -32,7 +32,12 @@ public class DefraNodeInitOptions {
     public boolean inMemory;
     /** Whether P2P networking is disabled. */
     public boolean disableP2P;
-    /** Whether the HTTP API server is disabled. */
+    /**
+     * Has no effect: the embedded node does not serve the HTTP API.
+     *
+     * @deprecated the embedded node never starts the HTTP API server
+     */
+    @Deprecated
     public boolean disableAPI;
     /** Whether node access control is enabled. */
     public boolean enableNodeACP;
@@ -44,7 +49,12 @@ public class DefraNodeInitOptions {
     public long badgerFileSize;
     /** Badger encryption key, or {@code null} if encryption is disabled. */
     public byte[] badgerEncryptionKey;
-    /** Whether block signing is enabled by default. */
+    /**
+     * Has no effect: blocks are signed by default.
+     *
+     * @deprecated use {@link #disableSigning} to turn block signing off
+     */
+    @Deprecated
     public boolean enableSigning;
     /** Key used for searchable encryption, or {@code null} if disabled. */
     public byte[] searchableEncryptionKey;

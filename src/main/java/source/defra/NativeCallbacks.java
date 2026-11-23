@@ -10,11 +10,14 @@
 
 package source.defra;
 
+import java.util.IdentityHashMap;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.LongConsumer;
 
 /**
  * What DefraDB calls back into: pending asynchronous queries, remote signers
@@ -28,11 +31,19 @@ final class NativeCallbacks {
     /** Signing status for a request that did not reach the signer; DefraDB may ask again. */
     static final int SIGN_RETRYABLE = 2;
 
+    /** The error of a query result the native layer could not hand to Java. */
+    static final String UNDELIVERABLE = "DefraDB's result could not be converted for Java";
+
     private static final AtomicLong NEXT = new AtomicLong(1);
     private static final ConcurrentHashMap<Long, CompletableFuture<DefraResult>> QUERIES = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<Long, DefraRemoteSigner> SIGNERS = new ConcurrentHashMap<>();
-    private static final ConcurrentHashMap<DefraRemoteSigner, Long> SIGNER_HANDLES = new ConcurrentHashMap<>();
+    // By identity, not equals: a signer is one registration however it
+    // defines equality, and an equal but distinct instance is another.
+    private static final Map<DefraRemoteSigner, Long> SIGNER_HANDLES = new IdentityHashMap<>();
     private static final ConcurrentHashMap<Long, DefraReplicationFilter> FILTERS = new ConcurrentHashMap<>();
+    // Unbounded on purpose: a signer may block (on a user prompt, a remote
+    // keystore), and a bounded pool would queue every other signature and
+    // query result behind it.
     private static final ExecutorService WORK = Executors.newCachedThreadPool(runnable -> {
         Thread thread = new Thread(runnable, "defra-callbacks");
         thread.setDaemon(true);
@@ -44,18 +55,30 @@ final class NativeCallbacks {
 
     private static native int CompleteSignNative(long completion, int status, byte[] signature);
 
-    /** A handle for a query whose result `future` receives. */
-    static long pendingQuery(CompletableFuture<DefraResult> future) {
+    /**
+     * Runs an asynchronous query: `start` makes the native call with the
+     * handle its result is delivered under. The future it returns completes
+     * with the response, or exceptionally with a {@link DefraException}, or
+     * with whatever the native call threw before reaching DefraDB.
+     */
+    static CompletableFuture<String> query(LongConsumer start) {
+        CompletableFuture<DefraResult> raw = new CompletableFuture<>();
         long handle = NEXT.getAndIncrement();
-        QUERIES.put(handle, future);
-        return handle;
+        QUERIES.put(handle, raw);
+        try {
+            start.accept(handle);
+        } catch (Throwable t) {
+            QUERIES.remove(handle);
+            raw.completeExceptionally(t);
+        }
+        return values(raw);
     }
 
     /**
      * The value of each result `raw` completes with: the response, or a
      * subscription's ID (status 2); a failed call completes exceptionally.
      */
-    static CompletableFuture<String> values(CompletableFuture<DefraResult> raw) {
+    private static CompletableFuture<String> values(CompletableFuture<DefraResult> raw) {
         CompletableFuture<String> values = new CompletableFuture<>();
         raw.whenComplete((result, failure) -> {
             if (failure != null) {
@@ -70,17 +93,22 @@ final class NativeCallbacks {
     }
 
     /**
-     * `signer`'s handle, the same for every registration of it: DefraDB
-     * fixes a DID's signer while it has live identities, and recognizes it by
-     * this value. A signer stays registered for the life of the process,
-     * since nodes keep signing through it after its identities are freed.
+     * `signer`'s handle, the same for every registration of that instance:
+     * DefraDB fixes a DID's signer while it has live identities, and
+     * recognizes it by this value. A signer stays registered for the life of
+     * the process, since nodes keep signing through it after its identities
+     * are freed.
      */
     static long signer(DefraRemoteSigner signer) {
-        return SIGNER_HANDLES.computeIfAbsent(signer, s -> {
-            long handle = NEXT.getAndIncrement();
-            SIGNERS.put(handle, s);
+        synchronized (SIGNER_HANDLES) {
+            Long handle = SIGNER_HANDLES.get(signer);
+            if (handle == null) {
+                handle = NEXT.getAndIncrement();
+                SIGNERS.put(handle, signer);
+                SIGNER_HANDLES.put(signer, handle);
+            }
             return handle;
-        });
+        }
     }
 
     /** A handle for `filter`, kept until {@link #releaseFilter} after its node closes. */
@@ -99,7 +127,7 @@ final class NativeCallbacks {
     static void deliverQuery(long handle, int status, String error, String value) {
         CompletableFuture<DefraResult> future = QUERIES.remove(handle);
         if (future != null) {
-            DefraResult result = new DefraResult(status, error, value);
+            DefraResult result = new DefraResult(status, status == 1 && error == null ? UNDELIVERABLE : error, value);
             WORK.execute(() -> future.complete(result));
         }
     }
@@ -125,10 +153,14 @@ final class NativeCallbacks {
         return 0;
     }
 
+    /**
+     * Whether the filter `handle` names keeps a document. A filter released
+     * with its node, or one that throws, refuses: a filter fails closed.
+     */
     static boolean keep(long handle, String collectionID, String collectionName, String docID, String fieldsJSON) {
         DefraReplicationFilter filter = FILTERS.get(handle);
         if (filter == null) {
-            return true;
+            return false;
         }
         try {
             return filter.keep(collectionID, collectionName, docID, fieldsJSON);

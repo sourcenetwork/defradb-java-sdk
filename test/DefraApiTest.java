@@ -12,7 +12,9 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.time.Duration;
 
 import source.defra.DefraCollection;
 import source.defra.DefraCollectionOptions;
@@ -138,6 +140,15 @@ public class DefraApiTest {
         DefraCollection collection = (DefraCollection) ok("getCollectionByName", () -> node.getCollectionByName("User"));
         ok("getCollectionByName as identity", () -> node.getCollectionByName("User", owner));
         reaches("patchCollection", () -> node.patchCollection("[]", ""));
+        ok("addCollection Patched", () -> node.addCollection("type Patched { a: Int }"));
+        ok("patchCollection adds a field", () -> node.patchCollection(
+            "[{\"op\": \"add\", \"path\": \"/Patched/Fields/-\", \"value\": {\"Name\": \"patchedField\", \"Kind\": \"String\"}}]", ""));
+        String patched = (String) ok("describeCollection after patch", () -> {
+            DefraCollectionOptions p = new DefraCollectionOptions();
+            p.name = "Patched";
+            return node.describeCollection(p);
+        });
+        check("describeCollection shows the patched field", patched != null && patched.contains("patchedField"), String.valueOf(patched));
         reaches("setActiveCollection", () -> {
             DefraCollectionOptions version = users();
             version.version = collection.VersionID();
@@ -168,8 +179,15 @@ public class DefraApiTest {
         // Queries and subscriptions.
         String queried = (String) ok("executeQuery", () -> node.executeQuery("{ User { name } }", "", ""));
         check("executeQuery sees Alice", queried != null && queried.contains("Alice"), String.valueOf(queried));
-        ok("executeQuery with variables", () -> node.executeQuery(
+        String filtered = (String) ok("executeQuery with variables", () -> node.executeQuery(
             "query Q($n: String) { User(filter: {name: {_eq: $n}}) { name } }", "Q", "{\"n\":\"Alice\"}"));
+        check("variables reach the query", filtered != null && filtered.contains("Alice") && !filtered.contains("Signed"), String.valueOf(filtered));
+        String picked = (String) ok("executeQuery picks the operation", () -> node.executeQuery(
+            "query A { User(filter: {name: {_eq: \"Alice\"}}) { name } } query S { User(filter: {name: {_eq: \"Signed\"}}) { name } }", "S", ""));
+        check("operationName picks the operation", picked != null && picked.contains("Signed") && !picked.contains("Alice"), String.valueOf(picked));
+        String lone = docIDOf((String) ok("addDocument with an unpaired surrogate", () -> node.addDocument("{\"name\":\"lone\ud800x\"}", false, "", users())));
+        String loneGot = (String) ok("getDocument with an unpaired surrogate", () -> node.getDocument(lone, false, users()));
+        check("an unpaired surrogate arrives as U+FFFD", loneGot != null && loneGot.contains("lone\ufffdx"), String.valueOf(loneGot));
         CountDownLatch event = new CountDownLatch(1);
         String subscription = (String) ok("subscribe", () -> node.subscribe("subscription { User { name } }", e -> event.countDown()));
         ok("executeQuery mutation", () -> node.executeQuery("mutation { add_User(input: {name: \"Carol\"}) { _docID } }", "", ""));
@@ -382,15 +400,49 @@ public class DefraApiTest {
             reaches("disconnectP2PPeers", () -> p2p.disconnectP2PPeers("12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN"));
             reaches("addP2PReplicator", () -> p2p.addP2PReplicator("User", info == null ? "" : info));
             reaches("deleteP2PReplicator", () -> p2p.deleteP2PReplicator("User", "12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN"));
-            reaches("syncP2PDocuments", () -> p2p.syncP2PDocuments("User", p2pDocID, "1s"));
-            reaches("syncP2PCollectionVersions", () -> p2p.syncP2PCollectionVersions(p2p.getCollectionByName("User").VersionID(), "500ms"));
-            reaches("syncP2PBranchableCollection", () -> p2p.syncP2PBranchableCollection(p2p.getCollectionByName("User").CollectionID(), "1m"));
+            reaches("syncP2PDocuments", () -> p2p.syncP2PDocuments("User", p2pDocID, Duration.ofSeconds(1)));
+            reaches("syncP2PDocuments as identity", () -> p2p.syncP2PDocuments("User", p2pDocID, Duration.ofSeconds(1), null));
+            reaches("syncP2PDocuments under a millisecond", () -> p2p.syncP2PDocuments("User", p2pDocID, Duration.ofNanos(500)));
+            reaches("syncP2PCollectionVersions", () -> p2p.syncP2PCollectionVersions(p2p.getCollectionByName("User").VersionID(), Duration.ofMillis(500)));
+            reaches("syncP2PBranchableCollection", () -> p2p.syncP2PBranchableCollection(p2p.getCollectionByName("User").CollectionID(), Duration.ofMinutes(1)));
+            reaches("syncP2PDocuments Go duration", () -> p2p.syncP2PDocuments("User", p2pDocID, "1s"));
+            reaches("syncP2PDocuments Go duration under a millisecond", () -> p2p.syncP2PDocuments("User", p2pDocID, "500us"));
+            reaches("syncP2PCollectionVersions Go duration", () -> p2p.syncP2PCollectionVersions(p2p.getCollectionByName("User").VersionID(), "1m30s"));
+            reaches("syncP2PBranchableCollection Go duration", () -> p2p.syncP2PBranchableCollection(p2p.getCollectionByName("User").CollectionID(), "1.5h"));
             refuses("syncP2PDocuments bad timeout", "invalid timeout", () -> p2p.syncP2PDocuments("User", p2pDocID, "soon"));
+            ok("syncP2PDocuments negative timeout", () -> {
+                try {
+                    p2p.syncP2PDocuments("User", p2pDocID, Duration.ofSeconds(-1));
+                    throw new AssertionError("a negative timeout was accepted");
+                } catch (IllegalArgumentException expected) {
+                    return null;
+                }
+            });
             ok("close P2P node", () -> { p2p.close(); return null; });
         }
 
         ok("close", () -> { node.close(); return null; });
         report();
+    }
+
+    /**
+     * How long, in milliseconds, one document sync ran before it answered.
+     * DefraDB keeps trying an unanswered sync (no peer has the document, or
+     * the gossip mesh is still forming) until its timeout, so this is about
+     * the timeout DefraDB was given. Fails if the sync is still running
+     * after 30s.
+     */
+    static Long timedSync(DefraNode node, String collection, String docID, Duration timeout) throws Exception {
+        java.util.concurrent.CompletableFuture<Long> timed = java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+            long start = System.nanoTime();
+            try {
+                node.syncP2PDocuments(collection, docID, timeout);
+            } catch (DefraException unanswered) {
+                // Expected: the sync gives up at its timeout.
+            }
+            return (System.nanoTime() - start) / 1_000_000;
+        });
+        return timed.get(30, TimeUnit.SECONDS);
     }
 
     static String docIDOf(String added) {
@@ -507,6 +559,20 @@ public class DefraApiTest {
         // Asynchronous queries, on the node and in a transaction.
         String async = (String) ok("executeQueryAsync", () -> node.executeQueryAsync("{ User { name } }", "", "", null).get(10, TimeUnit.SECONDS));
         check("executeQueryAsync answers", async != null && async.contains("S1"), String.valueOf(async));
+        String asyncFiltered = (String) ok("executeQueryAsync with variables", () -> node.executeQueryAsync(
+            "query Q($n: String) { User(filter: {name: {_eq: $n}}) { name } }", "Q", "{\"n\":\"S2\"}", null).get(10, TimeUnit.SECONDS));
+        check("executeQueryAsync passes variables", asyncFiltered != null && asyncFiltered.contains("S2") && !asyncFiltered.contains("S1"), String.valueOf(asyncFiltered));
+        ok("executeQueryAsync failure completes the future", () -> {
+            try {
+                node.executeQueryAsync("{ User { name } }", "", "not json", null).get(10, TimeUnit.SECONDS);
+            } catch (ExecutionException e) {
+                if (e.getCause() instanceof DefraException && e.getCause().getMessage() != null && !e.getCause().getMessage().isEmpty()) {
+                    return null;
+                }
+                throw e;
+            }
+            throw new AssertionError("malformed variables were accepted");
+        });
         DefraTransaction txn = (DefraTransaction) ok("transactionCreate for additions", () -> node.transactionCreate(false));
         ok("txn saveDocuments", () -> txn.saveDocuments("[{\"name\":\"T1\"}]", false, "", users(), null));
         String txnAsync = (String) ok("txn executeQueryAsync", () -> txn.executeQueryAsync("{ User { name } }", "", "", null).get(10, TimeUnit.SECONDS));
@@ -579,6 +645,21 @@ public class DefraApiTest {
             check("the filter keeps a matching document", finalReceived.contains("keep"), finalReceived);
             check("the filter refuses the other", !finalReceived.contains("skip"), finalReceived);
             check("the filter was asked", asked.get() > 0, "never asked");
+
+            // A sync between connected peers ends by its timeout: a document
+            // the receiver asks for that no peer answers runs until then, so
+            // a timeout DefraDB did not get (0 is no limit) would hang here.
+            ok("receiver addCollection Pulled", () -> receiver.addCollection("type Pulled { name: String }"));
+            ok("sender addCollection Pulled", () -> sender.addCollection("type Pulled { name: String }"));
+            List<String> senderAddresses = addresses((String) ok("sender getP2PInfo", sender::getP2PInfo));
+            ok("sender addP2PCollection Pulled", () -> sender.addP2PCollection("Pulled"));
+            ok("receiver addP2PCollection Pulled", () -> receiver.addP2PCollection("Pulled"));
+            ok("receiver connects to the sender", () -> receiver.connectP2PPeers(String.join(",", senderAddresses)));
+            String unknown = "bae-00000000-0000-0000-0000-000000000000";
+            Long twoSeconds = (Long) ok("syncP2PDocuments with a 2s timeout", () -> timedSync(receiver, "Pulled", unknown, Duration.ofSeconds(2)));
+            check("a 2s sync ends near 2s", twoSeconds != null && twoSeconds >= 1_500 && twoSeconds < 10_000, twoSeconds + "ms");
+            Long underOne = (Long) ok("syncP2PDocuments with a 500ns timeout", () -> timedSync(receiver, "Pulled", unknown, Duration.ofNanos(500)));
+            check("a sub-millisecond sync is not unlimited", underOne != null && underOne < 1_500, underOne + "ms");
 
             ok("retryP2PReplicators", () -> sender.retryP2PReplicators(null));
             reaches("addP2PReplicator filtered", () -> sender.addP2PReplicator("Item", String.join(",", receiverAddresses), "{\"Item\": {\"name\": {\"_eq\": \"keep\"}}}", null));

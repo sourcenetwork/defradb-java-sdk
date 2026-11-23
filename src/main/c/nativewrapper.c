@@ -18,6 +18,7 @@
 // so one C function serves each method in every class that declares it.
 
 #include <jni.h>
+#include <pthread.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -94,6 +95,11 @@ static char* utf8_from_string(JNIEnv* env, jstring s) {
                 i++;
             }
         }
+        // An unpaired surrogate has no UTF-8 form: Rust would reject the
+        // whole string, so it becomes U+FFFD as Java's own encoder does.
+        if (cp >= 0xD800 && cp <= 0xDFFF) {
+            cp = 0xFFFD;
+        }
         if (cp <= 0x7F) {
             out[n++] = (unsigned char)cp;
         } else if (cp <= 0x7FF) {
@@ -124,11 +130,22 @@ static char* utf8_from_string(JNIEnv* env, jstring s) {
 typedef struct {
     JNIEnv* env;
     void* owned[MAX_ARGS];
+    // The size of each owned buffer that holds key material, wiped before it
+    // is freed; 0 for any other.
+    size_t secret[MAX_ARGS];
     int count;
     // A conversion failed: a Java exception is pending, and the call returns
     // without calling DefraDB.
     int failed;
 } Args;
+
+static void throw_new(JNIEnv* env, const char* class_name, const char* message) {
+    jclass cls = (*env)->FindClass(env, class_name);
+    if (cls != NULL) {
+        (*env)->ThrowNew(env, cls, message);
+        (*env)->DeleteLocalRef(env, cls);
+    }
+}
 
 static void* keep(Args* a, void* buffer) {
     if (buffer == NULL) {
@@ -137,11 +154,24 @@ static void* keep(Args* a, void* buffer) {
     if (a->count == MAX_ARGS) {
         free(buffer);
         a->failed = 1;
+        throw_new(a->env, "java/lang/IllegalStateException", "a DefraDB call converts more than MAX_ARGS buffers");
         return NULL;
     }
+    a->secret[a->count] = 0;
     a->owned[a->count++] = buffer;
     return buffer;
 }
+
+// Marks the buffer `keep` stored last as key material of `size` bytes.
+static void secret(Args* a, const void* buffer, size_t size) {
+    if (buffer != NULL && a->count > 0 && a->owned[a->count - 1] == buffer) {
+        a->secret[a->count - 1] = size;
+    }
+}
+
+// memset through a volatile pointer, so the compiler cannot drop the wipe of
+// a buffer that is freed right after.
+static void* (*volatile wipe)(void*, int, size_t) = memset;
 
 // `s` as a C string the call owns; NULL for a null `s`.
 static const char* str(Args* a, jstring s) {
@@ -170,6 +200,7 @@ static const uint8_t* bytes_of(Args* a, jbyteArray bytes, int* len) {
     uint8_t* copy = (uint8_t*)malloc((size_t)n);
     if (copy == NULL) {
         a->failed = 1;
+        throw_new(a->env, "java/lang/OutOfMemoryError", "copying a byte array for DefraDB");
         return NULL;
     }
     (*a->env)->GetByteArrayRegion(a->env, bytes, 0, n, (jbyte*)copy);
@@ -179,22 +210,29 @@ static const uint8_t* bytes_of(Args* a, jbyteArray bytes, int* len) {
 
 static void args_free(Args* a) {
     for (int i = 0; i < a->count; i++) {
+        if (a->secret[i] != 0) {
+            wipe(a->owned[i], 0, a->secret[i]);
+        }
         free(a->owned[i]);
     }
     a->count = 0;
 }
 
 // Whether the call must return before calling DefraDB: a conversion failed,
-// or the JVM has an exception pending. Frees the call's buffers when so.
+// or the JVM has an exception pending. Frees the call's buffers when so, and
+// makes sure Java sees an exception rather than a bare null.
 static int abandoned(Args* a) {
     if (a->failed || (*a->env)->ExceptionCheck(a->env)) {
         args_free(a);
+        if (!(*a->env)->ExceptionCheck(a->env)) {
+            throw_new(a->env, "java/lang/IllegalStateException", "converting the arguments of a DefraDB call failed");
+        }
         return 1;
     }
     return 0;
 }
 
-#define ARGS Args a = { env, { 0 }, 0, 0 }
+#define ARGS Args a = { env, { 0 }, { 0 }, 0, 0 }
 
 //=============================================================================
 // Java object fields
@@ -302,84 +340,6 @@ static Collection collection(Args* a, jobject options) {
 }
 
 //=============================================================================
-// Durations
-//=============================================================================
-
-// A Go duration ("1m30s", "250ms", "1.5h") in whole milliseconds, the C
-// API's timeout_ms: what the sync calls took as a string under Go. Null or
-// empty is 0, no timeout. Returns 0 on success, -1 for a malformed or
-// negative duration.
-static int duration_ms(const char* s, int64_t* out) {
-    *out = 0;
-    if (s == NULL || *s == '\0') {
-        return 0;
-    }
-    if (*s == '+') {
-        s++;
-    } else if (*s == '-') {
-        return -1;
-    }
-    if (strcmp(s, "0") == 0) {
-        return 0;
-    }
-    if (*s == '\0') {
-        return -1;
-    }
-    long double total_ns = 0;
-    while (*s != '\0') {
-        long double value = 0;
-        int digits = 0;
-        while (*s >= '0' && *s <= '9') {
-            value = value * 10 + (*s - '0');
-            s++;
-            digits++;
-        }
-        if (*s == '.') {
-            s++;
-            long double scale = 0.1L;
-            while (*s >= '0' && *s <= '9') {
-                value += (*s - '0') * scale;
-                scale /= 10;
-                s++;
-                digits++;
-            }
-        }
-        if (digits == 0) {
-            return -1;
-        }
-        long double unit;
-        if (strncmp(s, "ns", 2) == 0) {
-            unit = 1;
-            s += 2;
-        } else if (strncmp(s, "us", 2) == 0) {
-            unit = 1e3L;
-            s += 2;
-        } else if (strncmp(s, "\xc2\xb5s", 3) == 0 || strncmp(s, "\xce\xbcs", 3) == 0) {
-            unit = 1e3L;
-            s += 3;
-        } else if (strncmp(s, "ms", 2) == 0) {
-            unit = 1e6L;
-            s += 2;
-        } else if (*s == 's') {
-            unit = 1e9L;
-            s += 1;
-        } else if (*s == 'm') {
-            unit = 60e9L;
-            s += 1;
-        } else if (*s == 'h') {
-            unit = 3600e9L;
-            s += 1;
-        } else {
-            return -1;
-        }
-        total_ns += value * unit;
-    }
-    long double ms = total_ns / 1e6L;
-    *out = ms >= (long double)INT64_MAX ? INT64_MAX : (int64_t)ms;
-    return 0;
-}
-
-//=============================================================================
 // Results
 //=============================================================================
 
@@ -456,17 +416,26 @@ static jobject txn_result(JNIEnv* env, struct DefraNewTxnResult res) {
 //=============================================================================
 
 // DefraDB calls these on its own threads, which the JVM does not know until
-// they attach. Each stays attached, as a daemon, for the rest of its life:
-// DefraDB's threads are long-lived, and attaching once is cheaper than
-// attaching for every call. The Java side (NativeCallbacks) passes anything
-// slow to its own threads, so a DefraDB thread never waits on application
-// code.
+// they attach. A thread attaches, as a daemon, on its first callback and
+// stays attached while it lives: attaching once is cheaper than attaching for
+// every call. DefraDB's threads do end (a node's worker pool joins its
+// threads when the node closes), and ART aborts the process when an attached
+// thread exits, so a thread-specific key detaches each thread the wrapper
+// attached as it exits. The Java side (NativeCallbacks) passes anything slow
+// to its own threads, so a DefraDB thread never waits on application code.
 
 static JavaVM* jvm;
 static jclass callbacks_class;
 static jmethodID callbacks_deliver_query;
 static jmethodID callbacks_sign;
 static jmethodID callbacks_keep;
+static pthread_key_t detach_key;
+
+// The destructor of detach_key: runs as a thread the wrapper attached exits.
+static void detach_thread(void* env) {
+    UNUSED(env);
+    (*jvm)->DetachCurrentThread(jvm);
+}
 
 // The current thread's JNIEnv, attaching the thread first if DefraDB made it.
 static JNIEnv* attached_env(void) {
@@ -479,6 +448,11 @@ static JNIEnv* attached_env(void) {
 #else
     if ((*jvm)->AttachCurrentThreadAsDaemon(jvm, (void**)&env, NULL) != JNI_OK) {
 #endif
+        return NULL;
+    }
+    // The destructor runs only for a non-null value; the env is one.
+    if (pthread_setspecific(detach_key, env) != 0) {
+        (*jvm)->DetachCurrentThread(jvm);
         return NULL;
     }
     return env;
@@ -496,31 +470,51 @@ static int clear_exception(JNIEnv* env) {
 }
 
 // A DefraResultCallback: hands an asynchronous query's result to the future
-// waiting under `context`, and frees the result.
+// waiting under `context`, and frees the result. DefraDB calls it exactly
+// once, so it always completes the future: a result Java cannot receive is
+// delivered as a failure with no message, which NativeCallbacks reports as a
+// conversion failure. Only a thread the JVM refuses to attach cannot reach
+// Java at all.
 static void on_query_result(uintptr_t context, struct DefraResult res) {
     JNIEnv* env = attached_env();
-    if (env != NULL && (*env)->PushLocalFrame(env, 4) == 0) {
-        jstring error = string_from_utf8(env, res.error);
-        jstring value = string_from_utf8(env, res.value);
-        if (!clear_exception(env)) {
-            (*env)->CallStaticVoidMethod(env, callbacks_class, callbacks_deliver_query,
-                (jlong)context, (jint)res.status, error, value);
-            clear_exception(env);
+    if (env != NULL) {
+        int framed = (*env)->PushLocalFrame(env, 4) == 0;
+        jint status = (jint)res.status;
+        jstring error = NULL;
+        jstring value = NULL;
+        if (framed) {
+            error = string_from_utf8(env, res.error);
+            value = string_from_utf8(env, res.value);
         }
-        (*env)->PopLocalFrame(env, NULL);
+        if (clear_exception(env) || !framed) {
+            status = 1;
+            error = NULL;
+            value = NULL;
+        }
+        (*env)->CallStaticVoidMethod(env, callbacks_class, callbacks_deliver_query,
+            (jlong)context, status, error, value);
+        clear_exception(env);
+        if (framed) {
+            (*env)->PopLocalFrame(env, NULL);
+        }
     }
     defra_result_free(&res);
 }
 
 // A DefraRemoteSignAsyncCallback: starts the signature on the Java signer
-// `signer_handle` names. Java completes it later with
-// defra_remote_sign_complete, through sign_complete below.
+// `signer_handle` names, returning 0 once it has started and 1 when it could
+// not. Java completes it later with defra_remote_sign_complete, through
+// sign_complete below.
 static int on_sign(uintptr_t signer_handle, const char* did, const char* key_type, const uint8_t* payload, uintptr_t payload_len, uintptr_t completion) {
     JNIEnv* env = attached_env();
-    if (env == NULL || (*env)->PushLocalFrame(env, 4) != 0) {
+    if (env == NULL) {
         return 1;
     }
-    int started = 1;
+    if ((*env)->PushLocalFrame(env, 4) != 0) {
+        clear_exception(env);
+        return 1;
+    }
+    int status = 1;
     jstring did_string = string_from_utf8(env, did);
     jstring key_type_string = string_from_utf8(env, key_type);
     jbyteArray payload_bytes = (*env)->NewByteArray(env, (jsize)payload_len);
@@ -528,21 +522,25 @@ static int on_sign(uintptr_t signer_handle, const char* did, const char* key_typ
         (*env)->SetByteArrayRegion(env, payload_bytes, 0, (jsize)payload_len, (const jbyte*)payload);
     }
     if (!clear_exception(env)) {
-        started = (int)(*env)->CallStaticIntMethod(env, callbacks_class, callbacks_sign,
+        status = (int)(*env)->CallStaticIntMethod(env, callbacks_class, callbacks_sign,
             (jlong)signer_handle, did_string, key_type_string, payload_bytes, (jlong)completion);
         if (clear_exception(env)) {
-            started = 1;
+            status = 1;
         }
     }
     (*env)->PopLocalFrame(env, NULL);
-    return started;
+    return status;
 }
 
 // A DefraReplicationFilterCallback: asks the Java filter `context` names
 // whether to keep a replicated document. A failure refuses it.
 static int on_replication_filter(uintptr_t context, const char* collection_id, const char* collection_name, const char* doc_id, const char* fields_json) {
     JNIEnv* env = attached_env();
-    if (env == NULL || (*env)->PushLocalFrame(env, 4) != 0) {
+    if (env == NULL) {
+        return 0;
+    }
+    if ((*env)->PushLocalFrame(env, 4) != 0) {
+        clear_exception(env);
         return 0;
     }
     int keep = 0;
@@ -1022,6 +1020,7 @@ static jobject identity_new_from_private_key(JNIEnv* env, jobject thiz, jstring 
     UNUSED(thiz);
     ARGS;
     const char* key_c = str(&a, private_key_hex);
+    secret(&a, key_c, key_c == NULL ? 0 : strlen(key_c));
     if (abandoned(&a)) return NULL;
     DefraIdentityNewOptions opts = { .key_type = NULL };
     jobject res = identity_result(env, defra_identity_new_from_private_key(key_c, opts));
@@ -1134,11 +1133,13 @@ static jobject node_new(JNIEnv* env, jobject thiz, jobject options, jlong replic
     opts.store_type = field_str(&a, options, cls, "storeType");
     opts.store_file_size = field_long(&a, options, cls, "badgerFileSize");
     opts.store_encryption_key = field_bytes(&a, options, cls, "badgerEncryptionKey", &opts.store_encryption_key_len);
+    secret(&a, opts.store_encryption_key, (size_t)opts.store_encryption_key_len);
 
     // enableSigning, from Go's options, has no effect: false was Go's
     // default, which signs, and true asked for the same.
     opts.disable_signing = field_bool(&a, options, cls, "disableSigning");
     opts.searchable_encryption_key = field_bytes(&a, options, cls, "searchableEncryptionKey", &opts.searchable_encryption_key_len);
+    secret(&a, opts.searchable_encryption_key, (size_t)opts.searchable_encryption_key_len);
     opts.p2p_block_sync_timeout_ms = field_long(&a, options, cls, "p2pBlockSyncTimeoutMs");
     opts.lens_pool_size = field_int(&a, options, cls, "lensPoolSize");
     opts.chunk_size = field_int(&a, options, cls, "chunkSize");
@@ -1147,6 +1148,7 @@ static jobject node_new(JNIEnv* env, jobject thiz, jobject options, jlong replic
     opts.enable_relay = field_bool(&a, options, cls, "enableRelay");
     opts.enable_clear_backoff_on_retry = field_bool(&a, options, cls, "enableClearBackoffOnRetry");
     opts.p2p_private_key = field_bytes(&a, options, cls, "p2pPrivateKey", &opts.p2p_private_key_len);
+    secret(&a, opts.p2p_private_key, (size_t)opts.p2p_private_key_len);
 
     opts.http_address = field_str(&a, options, cls, "httpAddress");
     opts.http_allowed_origins = field_str(&a, options, cls, "httpAllowedOrigins");
@@ -1165,6 +1167,7 @@ static jobject node_new(JNIEnv* env, jobject thiz, jobject options, jlong replic
 
     opts.vera_chain_id = field_str(&a, options, cls, "veraChainID");
     opts.vera_signer_key = field_bytes(&a, options, cls, "veraSignerKey", &opts.vera_signer_key_len);
+    secret(&a, opts.vera_signer_key, (size_t)opts.vera_signer_key_len);
     opts.p2p_transport = field_str(&a, options, cls, "p2pTransport");
     opts.iroh_relay_url = field_str(&a, options, cls, "irohRelayURL");
     opts.iroh_relay_mode = field_str(&a, options, cls, "irohRelayMode");
@@ -1326,58 +1329,38 @@ static jobject p2p_replicator_delete(JNIEnv* env, jobject thiz, jlong target, js
     return res;
 }
 
-// Fills `opts` for a sync with Go duration `timeout`. Returns 0 with the
-// call's answer in `*answer` (NULL with an exception pending, or a refusal
-// of a malformed duration) when the call must not reach DefraDB.
-static int sync_options(JNIEnv* env, Args* a, jstring timeout, jlong identity, DefraP2PSyncOptions* opts, jobject* answer) {
-    const char* timeout_c = str(a, timeout);
-    if (abandoned(a)) {
-        *answer = NULL;
-        return 0;
-    }
-    int64_t timeout_ms;
-    if (duration_ms(timeout_c, &timeout_ms) != 0) {
-        args_free(a);
-        *answer = refused(env, "invalid timeout: expected a duration such as \"30s\" or \"1m30s\"");
-        return 0;
-    }
-    opts->identity = H(identity);
-    opts->timeout_ms = timeout_ms;
-    return 1;
-}
+// The sync calls take their timeout in milliseconds, 0 for none; the Java
+// side converts its Duration (or a deprecated Go duration string) first.
 
-static jobject p2p_sync_branchable(JNIEnv* env, jobject thiz, jlong target, jstring collection_id, jstring timeout, jlong identity) {
+static jobject p2p_sync_branchable(JNIEnv* env, jobject thiz, jlong target, jstring collection_id, jlong timeout_ms, jlong identity) {
     UNUSED(thiz);
     ARGS;
     const char* id_c = str(&a, collection_id);
-    DefraP2PSyncOptions opts = { 0 };
-    jobject answer;
-    if (!sync_options(env, &a, timeout, identity, &opts, &answer)) return answer;
+    if (abandoned(&a)) return NULL;
+    DefraP2PSyncOptions opts = { .identity = H(identity), .timeout_ms = (int64_t)timeout_ms };
     jobject res = result(env, defra_p2p_collection_sync_branchable(H(target), id_c, opts));
     args_free(&a);
     return res;
 }
 
-static jobject p2p_sync_versions(JNIEnv* env, jobject thiz, jlong target, jstring version_ids, jstring timeout, jlong identity) {
+static jobject p2p_sync_versions(JNIEnv* env, jobject thiz, jlong target, jstring version_ids, jlong timeout_ms, jlong identity) {
     UNUSED(thiz);
     ARGS;
     const char* ids_c = str(&a, version_ids);
-    DefraP2PSyncOptions opts = { 0 };
-    jobject answer;
-    if (!sync_options(env, &a, timeout, identity, &opts, &answer)) return answer;
+    if (abandoned(&a)) return NULL;
+    DefraP2PSyncOptions opts = { .identity = H(identity), .timeout_ms = (int64_t)timeout_ms };
     jobject res = result(env, defra_p2p_collection_sync_versions(H(target), ids_c, opts));
     args_free(&a);
     return res;
 }
 
-static jobject p2p_document_sync(JNIEnv* env, jobject thiz, jlong target, jstring collection_name, jstring doc_ids, jstring timeout, jlong identity) {
+static jobject p2p_document_sync(JNIEnv* env, jobject thiz, jlong target, jstring collection_name, jstring doc_ids, jlong timeout_ms, jlong identity) {
     UNUSED(thiz);
     ARGS;
     const char* collection_c = str(&a, collection_name);
     const char* ids_c = str(&a, doc_ids);
-    DefraP2PSyncOptions opts = { 0 };
-    jobject answer;
-    if (!sync_options(env, &a, timeout, identity, &opts, &answer)) return answer;
+    if (abandoned(&a)) return NULL;
+    DefraP2PSyncOptions opts = { .identity = H(identity), .timeout_ms = (int64_t)timeout_ms };
     jobject res = result(env, defra_p2p_document_sync(H(target), collection_c, ids_c, opts));
     args_free(&a);
     return res;
@@ -1512,7 +1495,8 @@ static void query_execute_async(JNIEnv* env, jobject thiz, jlong target, jstring
         .operation_name = str(&a, operation_name),
         .variables = str(&a, variables),
     };
-    // A failed conversion leaves its exception for executeQueryAsync to throw.
+    // A failed conversion leaves its exception for executeQueryAsync, which
+    // fails the future with it.
     if (abandoned(&a)) return;
     defra_query_execute_async(H(target), query_c, on_query_result, H(handle), opts);
     args_free(&a);
@@ -1705,14 +1689,14 @@ static const JNINativeMethod node_natives[] = {
     M("AddP2PCollectionNative", "(J" S "J)" R, p2p_collection_add),
     M("DeleteP2PCollectionNative", "(J" S "J)" R, p2p_collection_delete),
     M("ListP2PCollectionsNative", "(JJ)" R, p2p_collection_list),
-    M("SyncP2PBranchableCollectionNative", "(J" S S "J)" R, p2p_sync_branchable),
-    M("SyncP2PCollectionVersionsNative", "(J" S S "J)" R, p2p_sync_versions),
+    M("SyncP2PBranchableCollectionNative", "(J" S "JJ)" R, p2p_sync_branchable),
+    M("SyncP2PCollectionVersionsNative", "(J" S "JJ)" R, p2p_sync_versions),
     M("ConnectP2PPeersNative", "(J" S "J)" R, p2p_connect),
     M("DisconnectP2PPeersNative", "(J" S "J)" R, p2p_disconnect),
     M("AddP2PDocumentNative", "(J" S "J)" R, p2p_document_add),
     M("DeleteP2PDocumentNative", "(J" S "J)" R, p2p_document_delete),
     M("ListP2PDocumentsNative", "(JJ)" R, p2p_document_list),
-    M("SyncP2PDocumentsNative", "(J" S S S "J)" R, p2p_document_sync),
+    M("SyncP2PDocumentsNative", "(J" S S "JJ)" R, p2p_document_sync),
     M("GetP2PInfoNative", "(JJ)" R, p2p_info),
     M("ListP2PActivePeersNative", "(JJ)" R, p2p_peer_list),
     M("AddP2PReplicatorNative", "(J" S S "J)" R, p2p_replicator_add),
@@ -1784,6 +1768,9 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
         return JNI_ERR;
     }
     jvm = vm;
+    if (pthread_key_create(&detach_key, detach_thread) != 0) {
+        return JNI_ERR;
+    }
     // DefraDB's threads find no application classes through FindClass, so
     // the class they call back into is resolved here, once.
     jclass callbacks = (*env)->FindClass(env, "source/defra/NativeCallbacks");

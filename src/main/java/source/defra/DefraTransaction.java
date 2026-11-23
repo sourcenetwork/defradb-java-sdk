@@ -608,7 +608,9 @@ public class DefraTransaction {
     }
 
     /**
-     * Deletes every document in the selected collection within this transaction.
+     * Deletes every document in the selected collection. Truncation is not
+     * transactional: it applies immediately, is visible outside this
+     * transaction at once, and stands even if the transaction is discarded.
      *
      * @param options collection selector and operation options
      * @return the native operation result
@@ -623,7 +625,9 @@ public class DefraTransaction {
     }
 
     /**
-     * Deletes every document in the selected collection within this transaction.
+     * Deletes every document in the selected collection. Truncation is not
+     * transactional: it applies immediately, is visible outside this
+     * transaction at once, and stands even if the transaction is discarded.
      *
      * <p>If an identity parameter is present, it authorizes this operation.</p>
      *
@@ -1390,8 +1394,7 @@ public class DefraTransaction {
      *     with a {@link DefraException}
      */
     public java.util.concurrent.CompletableFuture<String> executeQueryAsync(String query, String operationName, String variables, DefraIdentity identity) {
-        java.util.concurrent.CompletableFuture<DefraResult> raw = new java.util.concurrent.CompletableFuture<>();
-        ExecuteQueryAsyncNative(this.txnPtr, query, pointer(identity), operationName, variables, NativeCallbacks.pendingQuery(raw));
-        return NativeCallbacks.values(raw);
+        return NativeCallbacks.query(handle ->
+            ExecuteQueryAsyncNative(this.txnPtr, query, pointer(identity), operationName, variables, handle));
     }
 }

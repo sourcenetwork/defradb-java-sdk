@@ -95,13 +95,22 @@ cbindgen --quiet \
     "$defra_dir_abs"
 
 # The ffi crate builds libffi; the SDK ships it as libdefradb, the name the
-# JNI wrapper links and NativeLoader extracts.
+# JNI wrapper links and NativeLoader extracts. Only the cdylib is built, and
+# on ELF targets it is linked with that name as its DT_SONAME, which the
+# Android loader expects. The flag reaches the ffi crate alone, so no
+# dependency rebuilds for it.
+ELF_SONAME=(-C link-arg=-Wl,-soname,libdefradb.so)
+
 build_desktop() {
     local feature_args=()
     if [ -n "$desktop_features" ]; then
         feature_args=(--no-default-features --features "$desktop_features")
     fi
-    (cd "$defra_dir_abs" && cargo build --release -p ffi "${feature_args[@]}")
+    local link_args=()
+    if [ "$(uname -s)" = Linux ]; then
+        link_args=("${ELF_SONAME[@]}")
+    fi
+    (cd "$defra_dir_abs" && cargo rustc --release -p ffi --lib --crate-type cdylib ${feature_args[@]+"${feature_args[@]}"} -- ${link_args[@]+"${link_args[@]}"})
 }
 
 # -------------------------
@@ -134,8 +143,9 @@ if [ "$android_present" = true ]; then
                 "CC_${cc_triple}=$toolchain/${triple}24-clang" \
                 "CXX_${cc_triple}=$toolchain/${triple}24-clang++" \
                 "AR_${cc_triple}=$toolchain/llvm-ar" \
-                cargo build --release -p ffi --target "$triple" \
-                --no-default-features --features "$android_features"
+                cargo rustc --release -p ffi --lib --crate-type cdylib --target "$triple" \
+                --no-default-features --features "$android_features" \
+                -- "${ELF_SONAME[@]}"
         )
         mkdir -p "$script_dir/src/main/jniLibs/$abi"
         cp "$target_dir/$triple/release/libffi.so" "$script_dir/src/main/jniLibs/$abi/libdefradb.so"
