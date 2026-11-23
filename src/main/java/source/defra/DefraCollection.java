@@ -458,7 +458,7 @@ public class DefraCollection {
      * @throws DefraException if DefraDB rejects the operation
      */
     public String purgeDocuments(String[] docIDs, DefraIdentity identity) throws DefraException {
-        DefraResult result = PurgeDocumentsNative(this.storePtr, new org.json.JSONArray(docIDs).toString(), collectionOptionsFromThis(), identity == null ? 0 : identity.getPointer());
+        DefraResult result = PurgeDocumentsNative(this.storePtr, new org.json.JSONArray(java.util.Arrays.asList(docIDs)).toString(), collectionOptionsFromThis(), identity == null ? 0 : identity.getPointer());
         if (result.status != 0) {
             throw new DefraException(result.error);
         }

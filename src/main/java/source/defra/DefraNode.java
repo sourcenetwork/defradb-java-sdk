@@ -14,7 +14,6 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 import org.json.JSONException;
 
-import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
@@ -1417,12 +1416,12 @@ public class DefraNode {
      * Synchronizes a branchable collection from connected P2P peers.
      *
      * @param collectionID collection identifier
-     * @param timeout how long the sync may take, or {@code null} or zero for no limit
+     * @param timeoutMillis how long the sync may take, in milliseconds; zero for no limit
      * @return the native operation result
      * @throws DefraException if DefraDB rejects the operation
      */
-    public String syncP2PBranchableCollection(String collectionID, Duration timeout) throws DefraException {
-        return value(SyncP2PBranchableCollectionNative(this.nodePtr, collectionID, Durations.millis(timeout), 0));
+    public String syncP2PBranchableCollection(String collectionID, long timeoutMillis) throws DefraException {
+        return value(SyncP2PBranchableCollectionNative(this.nodePtr, collectionID, Durations.millis(timeoutMillis), 0));
     }
 
     /**
@@ -1432,11 +1431,11 @@ public class DefraNode {
      * @param timeout a Go duration such as {@code "30s"} or {@code "1m30s"}; empty for no limit
      * @return the native operation result
      * @throws DefraException if DefraDB rejects the operation or the timeout is malformed
-     * @deprecated use {@link #syncP2PBranchableCollection(String, Duration)}
+     * @deprecated use {@link #syncP2PBranchableCollection(String, long)}
      */
     @Deprecated
     public String syncP2PBranchableCollection(String collectionID, String timeout) throws DefraException {
-        return syncP2PBranchableCollection(collectionID, Duration.ofMillis(Durations.goMillis(timeout)));
+        return syncP2PBranchableCollection(collectionID, Durations.goMillis(timeout));
     }
 
     /**
@@ -1445,13 +1444,13 @@ public class DefraNode {
      * <p>If an identity parameter is present, it authorizes this operation.</p>
      *
      * @param collectionID collection identifier
-     * @param timeout how long the sync may take, or {@code null} or zero for no limit
+     * @param timeoutMillis how long the sync may take, in milliseconds; zero for no limit
      * @param identity identity authorizing the operation
      * @return the native operation result
      * @throws DefraException if DefraDB rejects the operation
      */
-    public String syncP2PBranchableCollection(String collectionID, Duration timeout, DefraIdentity identity) throws DefraException {
-        return value(SyncP2PBranchableCollectionNative(this.nodePtr, collectionID, Durations.millis(timeout), pointer(identity)));
+    public String syncP2PBranchableCollection(String collectionID, long timeoutMillis, DefraIdentity identity) throws DefraException {
+        return value(SyncP2PBranchableCollectionNative(this.nodePtr, collectionID, Durations.millis(timeoutMillis), pointer(identity)));
     }
 
     /**
@@ -1464,23 +1463,23 @@ public class DefraNode {
      * @param identity identity authorizing the operation
      * @return the native operation result
      * @throws DefraException if DefraDB rejects the operation or the timeout is malformed
-     * @deprecated use {@link #syncP2PBranchableCollection(String, Duration, DefraIdentity)}
+     * @deprecated use {@link #syncP2PBranchableCollection(String, long, DefraIdentity)}
      */
     @Deprecated
     public String syncP2PBranchableCollection(String collectionID, String timeout, DefraIdentity identity) throws DefraException {
-        return syncP2PBranchableCollection(collectionID, Duration.ofMillis(Durations.goMillis(timeout)), identity);
+        return syncP2PBranchableCollection(collectionID, Durations.goMillis(timeout), identity);
     }
 
     /**
      * Synchronizes collection versions from connected P2P peers.
      *
      * @param versionIDs collection version identifiers, comma-separated
-     * @param timeout how long the sync may take, or {@code null} or zero for no limit
+     * @param timeoutMillis how long the sync may take, in milliseconds; zero for no limit
      * @return the native operation result
      * @throws DefraException if DefraDB rejects the operation
      */
-    public String syncP2PCollectionVersions(String versionIDs, Duration timeout) throws DefraException {
-        return value(SyncP2PCollectionVersionsNative(this.nodePtr, versionIDs, Durations.millis(timeout), 0));
+    public String syncP2PCollectionVersions(String versionIDs, long timeoutMillis) throws DefraException {
+        return value(SyncP2PCollectionVersionsNative(this.nodePtr, versionIDs, Durations.millis(timeoutMillis), 0));
     }
 
     /**
@@ -1490,11 +1489,11 @@ public class DefraNode {
      * @param timeout a Go duration such as {@code "30s"} or {@code "1m30s"}; empty for no limit
      * @return the native operation result
      * @throws DefraException if DefraDB rejects the operation or the timeout is malformed
-     * @deprecated use {@link #syncP2PCollectionVersions(String, Duration)}
+     * @deprecated use {@link #syncP2PCollectionVersions(String, long)}
      */
     @Deprecated
     public String syncP2PCollectionVersions(String versionIDs, String timeout) throws DefraException {
-        return syncP2PCollectionVersions(versionIDs, Duration.ofMillis(Durations.goMillis(timeout)));
+        return syncP2PCollectionVersions(versionIDs, Durations.goMillis(timeout));
     }
 
     /**
@@ -1503,13 +1502,13 @@ public class DefraNode {
      * <p>If an identity parameter is present, it authorizes this operation.</p>
      *
      * @param versionIDs collection version identifiers, comma-separated
-     * @param timeout how long the sync may take, or {@code null} or zero for no limit
+     * @param timeoutMillis how long the sync may take, in milliseconds; zero for no limit
      * @param identity identity authorizing the operation
      * @return the native operation result
      * @throws DefraException if DefraDB rejects the operation
      */
-    public String syncP2PCollectionVersions(String versionIDs, Duration timeout, DefraIdentity identity) throws DefraException {
-        return value(SyncP2PCollectionVersionsNative(this.nodePtr, versionIDs, Durations.millis(timeout), pointer(identity)));
+    public String syncP2PCollectionVersions(String versionIDs, long timeoutMillis, DefraIdentity identity) throws DefraException {
+        return value(SyncP2PCollectionVersionsNative(this.nodePtr, versionIDs, Durations.millis(timeoutMillis), pointer(identity)));
     }
 
     /**
@@ -1522,11 +1521,11 @@ public class DefraNode {
      * @param identity identity authorizing the operation
      * @return the native operation result
      * @throws DefraException if DefraDB rejects the operation or the timeout is malformed
-     * @deprecated use {@link #syncP2PCollectionVersions(String, Duration, DefraIdentity)}
+     * @deprecated use {@link #syncP2PCollectionVersions(String, long, DefraIdentity)}
      */
     @Deprecated
     public String syncP2PCollectionVersions(String versionIDs, String timeout, DefraIdentity identity) throws DefraException {
-        return syncP2PCollectionVersions(versionIDs, Duration.ofMillis(Durations.goMillis(timeout)), identity);
+        return syncP2PCollectionVersions(versionIDs, Durations.goMillis(timeout), identity);
     }
 
     /**
@@ -1697,12 +1696,12 @@ public class DefraNode {
      *
      * @param collection collection name
      * @param docIDs document identifiers, comma-separated
-     * @param timeout how long the sync may take, or {@code null} or zero for no limit
+     * @param timeoutMillis how long the sync may take, in milliseconds; zero for no limit
      * @return the native operation result
      * @throws DefraException if DefraDB rejects the operation
      */
-    public String syncP2PDocuments(String collection, String docIDs, Duration timeout) throws DefraException {
-        return value(SyncP2PDocumentsNative(this.nodePtr, collection, docIDs, Durations.millis(timeout), 0));
+    public String syncP2PDocuments(String collection, String docIDs, long timeoutMillis) throws DefraException {
+        return value(SyncP2PDocumentsNative(this.nodePtr, collection, docIDs, Durations.millis(timeoutMillis), 0));
     }
 
     /**
@@ -1713,11 +1712,11 @@ public class DefraNode {
      * @param timeout a Go duration such as {@code "30s"} or {@code "1m30s"}; empty for no limit
      * @return the native operation result
      * @throws DefraException if DefraDB rejects the operation or the timeout is malformed
-     * @deprecated use {@link #syncP2PDocuments(String, String, Duration)}
+     * @deprecated use {@link #syncP2PDocuments(String, String, long)}
      */
     @Deprecated
     public String syncP2PDocuments(String collection, String docIDs, String timeout) throws DefraException {
-        return syncP2PDocuments(collection, docIDs, Duration.ofMillis(Durations.goMillis(timeout)));
+        return syncP2PDocuments(collection, docIDs, Durations.goMillis(timeout));
     }
 
     /**
@@ -1727,13 +1726,13 @@ public class DefraNode {
      *
      * @param collection collection name
      * @param docIDs document identifiers, comma-separated
-     * @param timeout how long the sync may take, or {@code null} or zero for no limit
+     * @param timeoutMillis how long the sync may take, in milliseconds; zero for no limit
      * @param identity identity authorizing the operation
      * @return the native operation result
      * @throws DefraException if DefraDB rejects the operation
      */
-    public String syncP2PDocuments(String collection, String docIDs, Duration timeout, DefraIdentity identity) throws DefraException {
-        return value(SyncP2PDocumentsNative(this.nodePtr, collection, docIDs, Durations.millis(timeout), pointer(identity)));
+    public String syncP2PDocuments(String collection, String docIDs, long timeoutMillis, DefraIdentity identity) throws DefraException {
+        return value(SyncP2PDocumentsNative(this.nodePtr, collection, docIDs, Durations.millis(timeoutMillis), pointer(identity)));
     }
 
     /**
@@ -1747,11 +1746,11 @@ public class DefraNode {
      * @param identity identity authorizing the operation
      * @return the native operation result
      * @throws DefraException if DefraDB rejects the operation or the timeout is malformed
-     * @deprecated use {@link #syncP2PDocuments(String, String, Duration, DefraIdentity)}
+     * @deprecated use {@link #syncP2PDocuments(String, String, long, DefraIdentity)}
      */
     @Deprecated
     public String syncP2PDocuments(String collection, String docIDs, String timeout, DefraIdentity identity) throws DefraException {
-        return syncP2PDocuments(collection, docIDs, Duration.ofMillis(Durations.goMillis(timeout)), identity);
+        return syncP2PDocuments(collection, docIDs, Durations.goMillis(timeout), identity);
     }
 
     /**
@@ -2341,7 +2340,7 @@ public class DefraNode {
      * @throws DefraException if DefraDB rejects the operation
      */
     public String purgeDocuments(String[] docIDs, DefraCollectionOptions options, DefraIdentity identity) throws DefraException {
-        return value(PurgeDocumentsNative(this.nodePtr, new JSONArray(docIDs).toString(), options, pointer(identity)));
+        return value(PurgeDocumentsNative(this.nodePtr, new JSONArray(java.util.Arrays.asList(docIDs)).toString(), options, pointer(identity)));
     }
 
     // Asynchronous queries and events

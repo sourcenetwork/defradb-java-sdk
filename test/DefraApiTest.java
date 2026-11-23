@@ -14,7 +14,6 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
-import java.time.Duration;
 
 import source.defra.DefraCollection;
 import source.defra.DefraCollectionOptions;
@@ -400,11 +399,10 @@ public class DefraApiTest {
             reaches("disconnectP2PPeers", () -> p2p.disconnectP2PPeers("12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN"));
             reaches("addP2PReplicator", () -> p2p.addP2PReplicator("User", info == null ? "" : info));
             reaches("deleteP2PReplicator", () -> p2p.deleteP2PReplicator("User", "12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN"));
-            reaches("syncP2PDocuments", () -> p2p.syncP2PDocuments("User", p2pDocID, Duration.ofSeconds(1)));
-            reaches("syncP2PDocuments as identity", () -> p2p.syncP2PDocuments("User", p2pDocID, Duration.ofSeconds(1), null));
-            reaches("syncP2PDocuments under a millisecond", () -> p2p.syncP2PDocuments("User", p2pDocID, Duration.ofNanos(500)));
-            reaches("syncP2PCollectionVersions", () -> p2p.syncP2PCollectionVersions(p2p.getCollectionByName("User").VersionID(), Duration.ofMillis(500)));
-            reaches("syncP2PBranchableCollection", () -> p2p.syncP2PBranchableCollection(p2p.getCollectionByName("User").CollectionID(), Duration.ofMinutes(1)));
+            reaches("syncP2PDocuments", () -> p2p.syncP2PDocuments("User", p2pDocID, 1000L));
+            reaches("syncP2PDocuments as identity", () -> p2p.syncP2PDocuments("User", p2pDocID, 1000L, null));
+            reaches("syncP2PCollectionVersions", () -> p2p.syncP2PCollectionVersions(p2p.getCollectionByName("User").VersionID(), 500L));
+            reaches("syncP2PBranchableCollection", () -> p2p.syncP2PBranchableCollection(p2p.getCollectionByName("User").CollectionID(), 60_000L));
             reaches("syncP2PDocuments Go duration", () -> p2p.syncP2PDocuments("User", p2pDocID, "1s"));
             reaches("syncP2PDocuments Go duration under a millisecond", () -> p2p.syncP2PDocuments("User", p2pDocID, "500us"));
             reaches("syncP2PCollectionVersions Go duration", () -> p2p.syncP2PCollectionVersions(p2p.getCollectionByName("User").VersionID(), "1m30s"));
@@ -412,7 +410,7 @@ public class DefraApiTest {
             refuses("syncP2PDocuments bad timeout", "invalid timeout", () -> p2p.syncP2PDocuments("User", p2pDocID, "soon"));
             ok("syncP2PDocuments negative timeout", () -> {
                 try {
-                    p2p.syncP2PDocuments("User", p2pDocID, Duration.ofSeconds(-1));
+                    p2p.syncP2PDocuments("User", p2pDocID, -1000L);
                     throw new AssertionError("a negative timeout was accepted");
                 } catch (IllegalArgumentException expected) {
                     return null;
@@ -432,12 +430,12 @@ public class DefraApiTest {
      * the timeout DefraDB was given. Fails if the sync is still running
      * after 30s.
      */
-    static Long timedSync(DefraNode node, String collection, String docID, Duration timeout) throws Exception {
+    static Long timedSync(Call sync) throws Exception {
         java.util.concurrent.CompletableFuture<Long> timed = java.util.concurrent.CompletableFuture.supplyAsync(() -> {
             long start = System.nanoTime();
             try {
-                node.syncP2PDocuments(collection, docID, timeout);
-            } catch (DefraException unanswered) {
+                sync.run();
+            } catch (Exception unanswered) {
                 // Expected: the sync gives up at its timeout.
             }
             return (System.nanoTime() - start) / 1_000_000;
@@ -656,9 +654,9 @@ public class DefraApiTest {
             ok("receiver addP2PCollection Pulled", () -> receiver.addP2PCollection("Pulled"));
             ok("receiver connects to the sender", () -> receiver.connectP2PPeers(String.join(",", senderAddresses)));
             String unknown = "bae-00000000-0000-0000-0000-000000000000";
-            Long twoSeconds = (Long) ok("syncP2PDocuments with a 2s timeout", () -> timedSync(receiver, "Pulled", unknown, Duration.ofSeconds(2)));
+            Long twoSeconds = (Long) ok("syncP2PDocuments with a 2s timeout", () -> timedSync(() -> receiver.syncP2PDocuments("Pulled", unknown, 2000L)));
             check("a 2s sync ends near 2s", twoSeconds != null && twoSeconds >= 1_500 && twoSeconds < 10_000, twoSeconds + "ms");
-            Long underOne = (Long) ok("syncP2PDocuments with a 500ns timeout", () -> timedSync(receiver, "Pulled", unknown, Duration.ofNanos(500)));
+            Long underOne = (Long) ok("syncP2PDocuments with a 500us Go timeout", () -> timedSync(() -> receiver.syncP2PDocuments("Pulled", unknown, "500us")));
             check("a sub-millisecond sync is not unlimited", underOne != null && underOne < 1_500, underOne + "ms");
 
             ok("retryP2PReplicators", () -> sender.retryP2PReplicators(null));

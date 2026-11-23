@@ -1379,7 +1379,7 @@ public class DefraTransaction {
      * @throws DefraException if DefraDB rejects the operation
      */
     public String purgeDocuments(String[] docIDs, DefraCollectionOptions options, DefraIdentity identity) throws DefraException {
-        return value(PurgeDocumentsNative(this.txnPtr, new JSONArray(docIDs).toString(), options, pointer(identity)));
+        return value(PurgeDocumentsNative(this.txnPtr, new JSONArray(java.util.Arrays.asList(docIDs)).toString(), options, pointer(identity)));
     }
 
     /**

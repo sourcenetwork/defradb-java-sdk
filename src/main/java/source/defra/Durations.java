@@ -11,9 +11,12 @@
 package source.defra;
 
 import java.math.BigDecimal;
-import java.time.Duration;
 
-/** Timeouts as the C API takes them: whole milliseconds, 0 for none. */
+/**
+ * Timeouts as the C API takes them: whole milliseconds, 0 for none. The SDK
+ * takes milliseconds rather than java.time.Duration, which Android only has
+ * from API 26.
+ */
 final class Durations {
 
     private static final BigDecimal NANOS_PER_MILLI = BigDecimal.valueOf(1_000_000);
@@ -22,27 +25,18 @@ final class Durations {
     private Durations() {
     }
 
-    /**
-     * {@code timeout} in milliseconds; null or zero is no timeout. A positive
-     * timeout under a millisecond is one millisecond, since 0 would mean none.
-     */
-    static long millis(Duration timeout) {
-        if (timeout == null || timeout.isZero()) {
-            return 0;
+    /** {@code timeoutMillis}, checked: zero is no timeout, and it must not be negative. */
+    static long millis(long timeoutMillis) {
+        if (timeoutMillis < 0) {
+            throw new IllegalArgumentException("timeout must not be negative: " + timeoutMillis + "ms");
         }
-        if (timeout.isNegative()) {
-            throw new IllegalArgumentException("timeout must not be negative: " + timeout);
-        }
-        try {
-            return Math.max(1, timeout.toMillis());
-        } catch (ArithmeticException tooLong) {
-            return Long.MAX_VALUE;
-        }
+        return timeoutMillis;
     }
 
     /**
-     * A Go duration string ("1m30s", "250ms", "1.5h") in milliseconds, under
-     * the same rules as {@link #millis(Duration)}; null or empty is no timeout.
+     * A Go duration string ("1m30s", "250ms", "1.5h") in milliseconds; null
+     * or empty is no timeout. A positive duration under a millisecond is one
+     * millisecond, since 0 would mean none.
      */
     static long goMillis(String timeout) throws DefraException {
         if (timeout == null || timeout.isEmpty()) {
