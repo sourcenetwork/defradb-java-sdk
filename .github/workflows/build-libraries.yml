@@ -205,6 +205,17 @@ jobs:
           chmod +x gradlew build.sh src/main/c/build.sh
           ./build.sh --defra-dir defradb-source --android
 
+      # Every library a packaged .so needs must be in the AAR or on the device;
+      # a missing one only shows on the emulator, as an UnsatisfiedLinkError.
+      - name: Show Android library dependencies
+        env:
+          ANDROID_NDK: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          for so in src/main/jniLibs/*/*.so; do
+            echo "== $so"
+            "$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" -d "$so" | grep -E 'NEEDED|SONAME'
+          done
+
       - name: Stage AAR for instrumented test module
         run: |
           mkdir -p androidTest/libs
@@ -222,7 +233,18 @@ jobs:
           api-level: 29
           arch: x86_64
           disable-animations: true
-          script: cd androidTest && ../gradlew connectedAndroidTest
+          # On a failure, print the device log: a native crash takes the test
+          # process down with no Java stack trace, and its signal and
+          # backtrace (tags libc and DEBUG) are only there.
+          script: cd androidTest && ../gradlew connectedAndroidTest || (adb logcat -d -v brief '*:W' TestRunner:I System.out:I | tail -500; exit 1)
+
+      - name: Upload Android test report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-test-report
+          path: androidTest/build/reports/androidTests
+          if-no-files-found: ignore
 
       - name: Stage library files
         env:
