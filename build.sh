@@ -103,12 +103,11 @@ ELF_SONAME=(-C link-arg=-Wl,-soname,libdefradb.so)
 
 # Trial of nuclei 0.5.9, which stops calling the raw epoll_wait syscall on
 # Android x86_64 (Android's app seccomp filter kills an app that makes it).
-# Until defradb.rs pins it, the build fetches that release from crates.io and
-# points cargo at it with a [patch]; defradb.rs's ^0.5.8 requirement accepts
-# it. Once defradb.rs's Cargo.lock names this version or a later one,
-# nothing is overridden.
+# Cargo builds the version Cargo.lock names, so until defradb.rs's lock names
+# 0.5.9 or later, each build moves the lock to 0.5.9 with
+# `cargo update --precise` (defradb.rs's ^0.5.8 requirement accepts it),
+# builds with --locked, and then puts defradb.rs's Cargo.lock back.
 nuclei_version=0.5.9
-nuclei_args=()
 nuclei_override=false
 pinned_nuclei="$(awk '/^name = "nuclei"$/ { getline; gsub(/version = |"/, ""); print }' "$defra_dir_abs/Cargo.lock")"
 # True when version $1 is older than version $2 (dotted numbers).
@@ -126,42 +125,34 @@ if [ "$(printf '%s\n' "$pinned_nuclei" | grep -c .)" != 1 ]; then
     echo "Error: expected one nuclei version in $defra_dir_abs/Cargo.lock, found: ${pinned_nuclei:-none}"
     exit 1
 fi
-if ! version_older "$pinned_nuclei" "$nuclei_version"; then
-    echo "defradb.rs pins nuclei $pinned_nuclei, at least $nuclei_version; remove the nuclei override from build.sh."
-else
-    fetch_dir="$script_dir/build/nuclei-fetch"
-    mkdir -p "$fetch_dir/src"
-    printf '[package]\nname = "nuclei-fetch"\nversion = "0.0.0"\nedition = "2021"\n\n[dependencies]\nnuclei = "=%s"\n\n[workspace]\n' \
-        "$nuclei_version" > "$fetch_dir/Cargo.toml"
-    : > "$fetch_dir/src/lib.rs"
-    nuclei_src="$(cd "$fetch_dir" && cargo metadata --format-version 1 2>/dev/null \
-        | grep -o "\"manifest_path\":\"[^\"]*/nuclei-$nuclei_version/Cargo.toml\"" | head -n 1 \
-        | sed -e 's/^"manifest_path":"//' -e 's#/Cargo.toml"$##' || true)"
-    if [ ! -f "$nuclei_src/Cargo.toml" ]; then
-        echo "Error: could not fetch nuclei $nuclei_version from crates.io"
-        exit 1
-    fi
-    echo "Building against nuclei $nuclei_version (defradb.rs pins ${pinned_nuclei:-none})."
-    nuclei_args=(--config "patch.crates-io.nuclei.path=\"$nuclei_src\"")
+if version_older "$pinned_nuclei" "$nuclei_version"; then
+    echo "Building against nuclei $nuclei_version (defradb.rs pins $pinned_nuclei)."
     nuclei_override=true
+else
+    echo "defradb.rs pins nuclei $pinned_nuclei, at least $nuclei_version; remove the nuclei override from build.sh."
 fi
 
 # Runs cargo in the checkout: [VAR=value ...] cargo <args>. With the nuclei
-# override, cargo rewrites Cargo.lock; defradb.rs's copy is put back as it
-# was, and the build fails if cargo did not use the override.
+# override, the build runs on a Cargo.lock moved to that nuclei version, and
+# defradb.rs's own Cargo.lock is put back afterwards, whatever the outcome.
 cargo_defra() {
     local envs=()
     while [ "$1" != cargo ]; do envs+=("$1"); shift; done
     shift
+    if [ "$nuclei_override" = false ]; then
+        (cd "$defra_dir_abs" && env ${envs[@]+"${envs[@]}"} cargo "$@")
+        return
+    fi
     local lock="$defra_dir_abs/Cargo.lock"
     local status=0
     cp -p "$lock" "$lock.sdk-backup"
-    (cd "$defra_dir_abs" && env ${envs[@]+"${envs[@]}"} cargo ${nuclei_args[@]+"${nuclei_args[@]}"} "$@") || status=$?
-    if [ "$status" = 0 ] && [ "$nuclei_override" = true ] \
-        && { grep -q '^\[\[patch.unused\]\]' "$lock" \
-            || ! grep -A1 '^name = "nuclei"$' "$lock" | grep -q "^version = \"$nuclei_version\"$"; }; then
-        echo "Error: cargo did not build against nuclei $nuclei_version"
+    (cd "$defra_dir_abs" && cargo update --quiet -p nuclei --precise "$nuclei_version") || status=$?
+    if [ "$status" = 0 ] && ! grep -A1 '^name = "nuclei"$' "$lock" | grep -q "^version = \"$nuclei_version\"$"; then
+        echo "Error: Cargo.lock does not name nuclei $nuclei_version after cargo update"
         status=1
+    fi
+    if [ "$status" = 0 ]; then
+        (cd "$defra_dir_abs" && env ${envs[@]+"${envs[@]}"} cargo "$1" --locked "${@:2}") || status=$?
     fi
     mv -f "$lock.sdk-backup" "$lock"
     return "$status"
@@ -262,7 +253,6 @@ fi
 if [ "$cleanup" = true ]; then
     echo "Cleaning up build artifacts..."
     rm -f "$c_dir/defra.h"
-    rm -rf "$script_dir/build/nuclei-fetch"
     rm -f "$script_dir/src/main/linuxLibs/libdefradb.so" "$script_dir/src/main/linuxLibs/libnativewrapper.so"
     rm -f "$script_dir/src/main/macosLibs/libdefradb.dylib" "$script_dir/src/main/macosLibs/libnativewrapper.dylib"
     for abi in arm64-v8a x86_64; do
