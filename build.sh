@@ -105,13 +105,29 @@ ELF_SONAME=(-C link-arg=-Wl,-soname,libdefradb.so)
 # Android x86_64 (Android's app seccomp filter kills an app that makes it).
 # Until defradb.rs pins it, the build fetches that release from crates.io and
 # points cargo at it with a [patch]; defradb.rs's ^0.5.8 requirement accepts
-# it. Once defradb.rs's Cargo.lock names this version, nothing is overridden.
+# it. Once defradb.rs's Cargo.lock names this version or a later one,
+# nothing is overridden.
 nuclei_version=0.5.9
 nuclei_args=()
 nuclei_override=false
 pinned_nuclei="$(awk '/^name = "nuclei"$/ { getline; gsub(/version = |"/, ""); print }' "$defra_dir_abs/Cargo.lock")"
-if [ "$pinned_nuclei" = "$nuclei_version" ]; then
-    echo "defradb.rs already pins nuclei $nuclei_version; remove the nuclei override from build.sh."
+# True when version $1 is older than version $2 (dotted numbers).
+version_older() {
+    awk -v a="$1" -v b="$2" 'BEGIN {
+        n = split(a, x, "."); m = split(b, y, ".")
+        for (i = 1; i <= (n > m ? n : m); i++) {
+            if (x[i] + 0 < y[i] + 0) exit 0
+            if (x[i] + 0 > y[i] + 0) exit 1
+        }
+        exit 1
+    }'
+}
+if [ "$(printf '%s\n' "$pinned_nuclei" | grep -c .)" != 1 ]; then
+    echo "Error: expected one nuclei version in $defra_dir_abs/Cargo.lock, found: ${pinned_nuclei:-none}"
+    exit 1
+fi
+if ! version_older "$pinned_nuclei" "$nuclei_version"; then
+    echo "defradb.rs pins nuclei $pinned_nuclei, at least $nuclei_version; remove the nuclei override from build.sh."
 else
     fetch_dir="$script_dir/build/nuclei-fetch"
     mkdir -p "$fetch_dir/src"
