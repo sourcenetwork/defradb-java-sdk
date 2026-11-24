@@ -101,63 +101,6 @@ cbindgen --quiet \
 # dependency rebuilds for it.
 ELF_SONAME=(-C link-arg=-Wl,-soname,libdefradb.so)
 
-# Trial of nuclei 0.5.9, which stops calling the raw epoll_wait syscall on
-# Android x86_64 (Android's app seccomp filter kills an app that makes it).
-# Cargo builds the version Cargo.lock names, so until defradb.rs's lock names
-# 0.5.9 or later, each build moves the lock to 0.5.9 with
-# `cargo update --precise` (defradb.rs's ^0.5.8 requirement accepts it),
-# builds with --locked, and then puts defradb.rs's Cargo.lock back.
-nuclei_version=0.5.9
-nuclei_override=false
-pinned_nuclei="$(awk '/^name = "nuclei"$/ { getline; gsub(/version = |"/, ""); print }' "$defra_dir_abs/Cargo.lock")"
-# True when version $1 is older than version $2 (dotted numbers).
-version_older() {
-    awk -v a="$1" -v b="$2" 'BEGIN {
-        n = split(a, x, "."); m = split(b, y, ".")
-        for (i = 1; i <= (n > m ? n : m); i++) {
-            if (x[i] + 0 < y[i] + 0) exit 0
-            if (x[i] + 0 > y[i] + 0) exit 1
-        }
-        exit 1
-    }'
-}
-if [ "$(printf '%s\n' "$pinned_nuclei" | grep -c .)" != 1 ]; then
-    echo "Error: expected one nuclei version in $defra_dir_abs/Cargo.lock, found: ${pinned_nuclei:-none}"
-    exit 1
-fi
-if version_older "$pinned_nuclei" "$nuclei_version"; then
-    echo "Building against nuclei $nuclei_version (defradb.rs pins $pinned_nuclei)."
-    nuclei_override=true
-else
-    echo "defradb.rs pins nuclei $pinned_nuclei, at least $nuclei_version; remove the nuclei override from build.sh."
-fi
-
-# Runs cargo in the checkout: [VAR=value ...] cargo <args>. With the nuclei
-# override, the build runs on a Cargo.lock moved to that nuclei version, and
-# defradb.rs's own Cargo.lock is put back afterwards, whatever the outcome.
-cargo_defra() {
-    local envs=()
-    while [ "$1" != cargo ]; do envs+=("$1"); shift; done
-    shift
-    if [ "$nuclei_override" = false ]; then
-        (cd "$defra_dir_abs" && env ${envs[@]+"${envs[@]}"} cargo "$@")
-        return
-    fi
-    local lock="$defra_dir_abs/Cargo.lock"
-    local status=0
-    cp -p "$lock" "$lock.sdk-backup"
-    (cd "$defra_dir_abs" && cargo update --quiet -p nuclei --precise "$nuclei_version") || status=$?
-    if [ "$status" = 0 ] && ! grep -A1 '^name = "nuclei"$' "$lock" | grep -q "^version = \"$nuclei_version\"$"; then
-        echo "Error: Cargo.lock does not name nuclei $nuclei_version after cargo update"
-        status=1
-    fi
-    if [ "$status" = 0 ]; then
-        (cd "$defra_dir_abs" && env ${envs[@]+"${envs[@]}"} cargo "$1" --locked "${@:2}") || status=$?
-    fi
-    mv -f "$lock.sdk-backup" "$lock"
-    return "$status"
-}
-
 build_desktop() {
     local feature_args=()
     if [ -n "$desktop_features" ]; then
@@ -167,7 +110,7 @@ build_desktop() {
     if [ "$(uname -s)" = Linux ]; then
         link_args=("${ELF_SONAME[@]}")
     fi
-    cargo_defra cargo rustc --release -p ffi --lib --crate-type cdylib ${feature_args[@]+"${feature_args[@]}"} -- ${link_args[@]+"${link_args[@]}"}
+    (cd "$defra_dir_abs" && cargo rustc --release -p ffi --lib --crate-type cdylib ${feature_args[@]+"${feature_args[@]}"} -- ${link_args[@]+"${link_args[@]}"})
 }
 
 # -------------------------
@@ -193,14 +136,17 @@ if [ "$android_present" = true ]; then
         # Run in the checkout so the target goes to the toolchain its
         # rust-toolchain.toml pins, the one cargo builds with there.
         (cd "$defra_dir_abs" && rustup target add "$triple" >/dev/null)
-        cargo_defra \
-            "CARGO_TARGET_${env_triple}_LINKER=$toolchain/${triple}24-clang" \
-            "CC_${cc_triple}=$toolchain/${triple}24-clang" \
-            "CXX_${cc_triple}=$toolchain/${triple}24-clang++" \
-            "AR_${cc_triple}=$toolchain/llvm-ar" \
-            cargo rustc --release -p ffi --lib --crate-type cdylib --target "$triple" \
-            --no-default-features --features "$android_features" \
-            -- "${ELF_SONAME[@]}"
+        (
+            cd "$defra_dir_abs"
+            env \
+                "CARGO_TARGET_${env_triple}_LINKER=$toolchain/${triple}24-clang" \
+                "CC_${cc_triple}=$toolchain/${triple}24-clang" \
+                "CXX_${cc_triple}=$toolchain/${triple}24-clang++" \
+                "AR_${cc_triple}=$toolchain/llvm-ar" \
+                cargo rustc --release -p ffi --lib --crate-type cdylib --target "$triple" \
+                --no-default-features --features "$android_features" \
+                -- "${ELF_SONAME[@]}"
+        )
         mkdir -p "$script_dir/src/main/jniLibs/$abi"
         cp "$target_dir/$triple/release/libffi.so" "$script_dir/src/main/jniLibs/$abi/libdefradb.so"
     done
