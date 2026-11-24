@@ -72,7 +72,7 @@ javac -cp defradb.jar Example.java
 java -cp .:defradb.jar Example
 ```
 
-The JAR bundles its Java dependency and the native libraries for the selected desktop platform. It must be built for the same operating system and architecture on which it runs.
+The JAR bundles its Java dependency and the native libraries for the selected desktop platform. It must be built for the same operating system and architecture on which it runs. On Linux, the native library links against the system's OpenSSL 3 (`libssl.so.3` and `libcrypto.so.3`), which must be installed where the application runs.
 
 ## Use on Android
 
@@ -98,9 +98,11 @@ android {
 }
 ```
 
+Android does not let apps use io_uring, so when the SDK loads on Android it sets `NUCLEI_BACKEND=epoll` for DefraDB's network runtime. An app that sets the variable before loading the SDK keeps its own value.
+
 ## Start a node
 
-The following creates an in-memory node with the HTTP API and peer-to-peer networking disabled by default:
+The following creates an in-memory node with peer-to-peer networking turned off. The embedded node never starts an HTTP API server; peer-to-peer networking starts by default unless `disableP2P` is set:
 
 ```java
 import source.defra.DefraException;
@@ -111,6 +113,7 @@ public final class Example {
     public static void main(String[] args) {
         DefraNodeInitOptions options = new DefraNodeInitOptions();
         options.inMemory = true;
+        options.disableP2P = true;
 
         try {
             DefraNode node = new DefraNode(options);
