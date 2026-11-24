@@ -31,6 +31,8 @@ The script:
 2. Builds the crate's shared library with `cargo rustc --release -p ffi --lib --crate-type cdylib`, for the host or for `aarch64-linux-android` and `x86_64-linux-android` with the NDK's clang as linker. Cargo names the library `libffi`; the script stages it as `libdefradb`, the name the JNI wrapper links and `NativeLoader` extracts, and on Linux and Android links it with that name as its `DT_SONAME`. `CARGO_TARGET_DIR` is respected.
 3. Compiles the JNI wrapper and packages the Java classes and native libraries. Desktop output is `build/libs/defradb.jar`, for the host architecture only. Android output is `build/outputs/aar/defradb-release.aar`, containing `arm64-v8a` and `x86_64` libraries.
 
+Android builds patch one line of nuclei, defradb.rs's network runtime, until a nuclei release fixes it. On x86_64, nuclei waits for network events with the raw `epoll_wait` system call. Android's seccomp filter for apps blocks that call, and the kernel kills the app as soon as a node starts. The script copies the nuclei version named in the checkout's `Cargo.lock` from the cargo registry to `build/nuclei-patch`, switches that call to `epoll_pwait` on Android, and builds with `cargo --config patch.crates-io.nuclei.path=…`. It restores `Cargo.lock` afterwards, so the checkout is left unchanged. The build fails if the code it patches has changed or cargo does not use the copy. If nuclei already has the fix, the script skips the patch and says the workaround can be removed. Desktop builds use nuclei unchanged.
+
 Options:
 
 - `--features <list>` replaces the `ffi` crate's default features for the desktop library, for example `--features native,wasmtime-runtime,vera,libp2p,profiling` to add profiling to the defaults.

@@ -125,6 +125,66 @@ if [ "$android_present" = true ]; then
     esac
     toolchain="$ndk/toolchains/llvm/prebuilt/$host_tag/bin"
 
+    # Workaround until nuclei avoids epoll_wait on Android: on x86_64 its
+    # parker calls the raw epoll_wait syscall, which Android's app seccomp
+    # filter answers with SIGSYS (bionic only uses epoll_pwait), killing the
+    # app when a node starts. The Android build uses a copy of the crates.io
+    # nuclei source that defradb.rs's Cargo.lock names, with that one call
+    # switched to epoll_pwait on Android. Delete this block once a nuclei
+    # release with the fix is pinned.
+    nuclei_patch=()
+    nuclei_patched=false
+    nuclei_version="$(awk '/^name = "nuclei"$/ { getline; gsub(/version = |"/, ""); print }' "$defra_dir_abs/Cargo.lock")"
+    if [ "$(printf '%s\n' "$nuclei_version" | grep -c .)" != 1 ]; then
+        echo "Error: expected one nuclei version in $defra_dir_abs/Cargo.lock, found: ${nuclei_version:-none}"
+        exit 1
+    fi
+    nuclei_src="$(cd "$defra_dir_abs" && cargo metadata --format-version 1 --locked 2>/dev/null \
+        | grep -o "\"manifest_path\":\"[^\"]*/nuclei-$nuclei_version/Cargo.toml\"" | head -n 1 \
+        | sed -e 's/^"manifest_path":"//' -e 's#/Cargo.toml"$##' || true)"
+    if [ ! -f "$nuclei_src/src/rt/park/linux.rs" ]; then
+        echo "Error: could not find the nuclei $nuclei_version source in the cargo registry"
+        exit 1
+    fi
+    parker="src/rt/park/linux.rs"
+    if ! grep -q 'SYS_epoll_wait' "$nuclei_src/$parker" || grep -q 'target_os = "android"' "$nuclei_src/$parker"; then
+        echo "nuclei $nuclei_version already avoids epoll_wait on Android; not patching it. Remove the workaround from build.sh."
+    else
+        staging="$script_dir/build/nuclei-patch/staging"
+        patched="$script_dir/build/nuclei-patch/nuclei-$nuclei_version"
+        rm -rf "$staging"
+        mkdir -p "$(dirname "$staging")"
+        cp -R "$nuclei_src" "$staging"
+        awk '
+            /^[[:space:]]*#\[cfg\(target_arch = "x86_64"\)\][[:space:]]*$/ { held = $0; next }
+            /^[[:space:]]*#\[cfg\(not\(target_arch = "x86_64"\)\)\][[:space:]]*$/ { held = $0; next }
+            held != "" {
+                if ($0 ~ /let call = libc::SYS_epoll_wait;/) {
+                    sub(/target_arch = "x86_64"/, "all(target_arch = \"x86_64\", not(target_os = \"android\"))", held); a++
+                } else if ($0 ~ /let call = libc::SYS_epoll_pwait;/) {
+                    sub(/target_arch = "x86_64"/, "all(target_arch = \"x86_64\", not(target_os = \"android\"))", held); b++
+                }
+                print held; held = ""
+            }
+            { print }
+            END { if (a != 1 || b != 1) exit 1 }
+        ' "$nuclei_src/$parker" > "$staging/$parker" || {
+            echo "Error: nuclei $nuclei_version's $parker no longer has the epoll_wait/epoll_pwait choice build.sh patches; update or remove the workaround"
+            exit 1
+        }
+        # Replace the patched copy only when it changed, so cargo does not
+        # rebuild nuclei and everything above it on every Android build.
+        if [ -d "$patched" ] && diff -r -q "$staging" "$patched" >/dev/null; then
+            rm -rf "$staging"
+        else
+            rm -rf "$patched"
+            mv "$staging" "$patched"
+        fi
+        echo "Building against nuclei $nuclei_version patched to use epoll_pwait on Android."
+        nuclei_patch=(--config "patch.crates-io.nuclei.path=\"$patched\"")
+        nuclei_patched=true
+    fi
+
     for abi in arm64-v8a x86_64; do
         case "$abi" in
             arm64-v8a) triple=aarch64-linux-android ;;
@@ -136,6 +196,11 @@ if [ "$android_present" = true ]; then
         # Run in the checkout so the target goes to the toolchain its
         # rust-toolchain.toml pins, the one cargo builds with there.
         (cd "$defra_dir_abs" && rustup target add "$triple" >/dev/null)
+        # A [patch] makes cargo rewrite Cargo.lock; keep defradb.rs's copy
+        # as it was, and fail if cargo did not use the patch.
+        lock="$defra_dir_abs/Cargo.lock"
+        cp -p "$lock" "$lock.sdk-backup"
+        status=0
         (
             cd "$defra_dir_abs"
             env \
@@ -143,10 +208,18 @@ if [ "$android_present" = true ]; then
                 "CC_${cc_triple}=$toolchain/${triple}24-clang" \
                 "CXX_${cc_triple}=$toolchain/${triple}24-clang++" \
                 "AR_${cc_triple}=$toolchain/llvm-ar" \
-                cargo rustc --release -p ffi --lib --crate-type cdylib --target "$triple" \
+                cargo ${nuclei_patch[@]+"${nuclei_patch[@]}"} rustc --release -p ffi --lib --crate-type cdylib --target "$triple" \
                 --no-default-features --features "$android_features" \
                 -- "${ELF_SONAME[@]}"
-        )
+        ) || status=$?
+        if [ "$status" = 0 ] && [ "$nuclei_patched" = true ] && grep -q '^\[\[patch.unused\]\]' "$lock"; then
+            echo "Error: cargo did not use the patched nuclei"
+            status=1
+        fi
+        mv -f "$lock.sdk-backup" "$lock"
+        if [ "$status" != 0 ]; then
+            exit "$status"
+        fi
         mkdir -p "$script_dir/src/main/jniLibs/$abi"
         cp "$target_dir/$triple/release/libffi.so" "$script_dir/src/main/jniLibs/$abi/libdefradb.so"
     done
@@ -199,6 +272,7 @@ fi
 if [ "$cleanup" = true ]; then
     echo "Cleaning up build artifacts..."
     rm -f "$c_dir/defra.h"
+    rm -rf "$script_dir/build/nuclei-patch"
     rm -f "$script_dir/src/main/linuxLibs/libdefradb.so" "$script_dir/src/main/linuxLibs/libnativewrapper.so"
     rm -f "$script_dir/src/main/macosLibs/libdefradb.dylib" "$script_dir/src/main/macosLibs/libnativewrapper.dylib"
     for abi in arm64-v8a x86_64; do
