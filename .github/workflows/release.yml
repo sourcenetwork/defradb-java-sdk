@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       defradb_ref:
-        description: DefraDB branch, tag, or commit (defaults to its default branch)
+        description: defradb.rs branch, tag, or commit (defaults to its default branch)
         required: false
         type: string
 

@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       defradb_ref:
-        description: DefraDB branch, tag, or commit (defaults to its default branch)
+        description: defradb.rs branch, tag, or commit (defaults to its default branch)
         required: false
         type: string
         default: ''
@@ -12,17 +12,20 @@ on:
 permissions:
   contents: read
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
   resolve-defradb:
-    name: Resolve DefraDB revision
+    name: Resolve defradb.rs revision
     runs-on: ubuntu-22.04
     outputs:
       sha: ${{ steps.revision.outputs.sha }}
     steps:
-      - name: Check out DefraDB
+      - name: Check out defradb.rs
         uses: actions/checkout@v4
         with:
-          repository: sourcenetwork/defradb
+          repository: sourcenetwork/defradb.rs
           ref: ${{ inputs.defradb_ref }}
           persist-credentials: false
 
@@ -54,10 +57,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Check out DefraDB
+      - name: Check out defradb.rs
         uses: actions/checkout@v4
         with:
-          repository: sourcenetwork/defradb
+          repository: sourcenetwork/defradb.rs
           ref: ${{ needs.resolve-defradb.outputs.sha }}
           path: defradb-source
           persist-credentials: false
@@ -68,24 +71,52 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev pkg-config protobuf-compiler libdbus-1-dev
+
+      - name: Install system dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install protobuf
+
+      # rustup installs the toolchain defradb.rs pins in rust-toolchain.toml
+      # the first time cargo runs there.
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cbindgen
+        uses: taiki-e/install-action@v2
         with:
-          go-version-file: defradb-source/go.mod
-          cache: false
+          tool: cbindgen
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: defradb-source
+          key: ${{ matrix.target }}-${{ matrix.arch }}
 
       - name: Build library
         run: |
           test "$(uname -m)" = "${{ matrix.arch }}"
-          chmod +x gradlew build.sh
-          find defradb-source -name '*.sh' -exec chmod +x {} +
+          chmod +x gradlew build.sh src/main/c/build.sh
           ./build.sh --defra-dir defradb-source --${{ matrix.target }}
 
-      - name: Test packaged JAR
+      - name: Compile tests
         run: |
           mkdir -p test-out
-          javac -cp build/libs/defradb.jar test/DefraTest.java -d test-out
-          java -cp build/libs/defradb.jar:test-out DefraTest
+          javac -cp build/libs/defradb.jar test/DefraTest.java test/DefraApiTest.java -d test-out
+
+      - name: Test packaged JAR
+        run: java -cp build/libs/defradb.jar:test-out DefraTest
+
+      # The remote-signer check signs blocks with P-256, which defradb.rs
+      # refuses by default because Go peers cannot verify ES256 block signatures.
+      - name: Test SDK API
+        env:
+          DEFRA_ALLOW_NON_GO_VERIFIABLE_SIGNING: '1'
+        run: java -Xcheck:jni -cp build/libs/defradb.jar:test-out DefraApiTest
 
       - name: Stage library files
         env:
@@ -94,7 +125,7 @@ jobs:
           mkdir -p dist
           artifact="defradb-${{ matrix.target }}-${{ matrix.arch }}"
           cp build/libs/defradb.jar "dist/$artifact.jar"
-          printf 'SDK commit: %s\nDefraDB commit: %s\n' \
+          printf 'SDK commit: %s\ndefradb.rs commit: %s\n' \
             "$(git rev-parse HEAD)" "$DEFRADB_SHA" > "dist/$artifact.txt"
           cd dist
           shasum -a 256 "$artifact.jar" > "$artifact.jar.sha256"
@@ -128,10 +159,10 @@ jobs:
           docker-images: true
           swap-storage: false
 
-      - name: Check out DefraDB
+      - name: Check out defradb.rs
         uses: actions/checkout@v4
         with:
-          repository: sourcenetwork/defradb
+          repository: sourcenetwork/defradb.rs
           ref: ${{ needs.resolve-defradb.outputs.sha }}
           path: defradb-source
           persist-credentials: false
@@ -148,19 +179,42 @@ jobs:
         with:
           ndk-version: r26d
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cbindgen
+        uses: taiki-e/install-action@v2
         with:
-          go-version-file: defradb-source/go.mod
-          cache: false
+          tool: cbindgen
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: defradb-source
+          key: android
 
       - name: Build Android library
         env:
           ANDROID_NDK: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
-          chmod +x gradlew build.sh
-          find defradb-source -name '*.sh' -exec chmod +x {} +
+          chmod +x gradlew build.sh src/main/c/build.sh
           ./build.sh --defra-dir defradb-source --android
+
+      # Every library a packaged .so needs must be in the AAR or on the device;
+      # a missing one only shows on the emulator, as an UnsatisfiedLinkError.
+      - name: Show Android library dependencies
+        env:
+          ANDROID_NDK: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          for so in src/main/jniLibs/*/*.so; do
+            echo "== $so"
+            "$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" -d "$so" | grep -E 'NEEDED|SONAME'
+          done
 
       - name: Stage AAR for instrumented test module
         run: |
@@ -179,7 +233,18 @@ jobs:
           api-level: 29
           arch: x86_64
           disable-animations: true
-          script: cd androidTest && ../gradlew connectedAndroidTest
+          # On a failure, print the device log: a native crash takes the test
+          # process down with no Java stack trace, and its signal and
+          # backtrace (tags libc and DEBUG) are only there.
+          script: cd androidTest && ../gradlew connectedAndroidTest || (adb logcat -d -v brief '*:W' TestRunner:I System.out:I | tail -500; exit 1)
+
+      - name: Upload Android test report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-test-report
+          path: androidTest/build/reports/androidTests
+          if-no-files-found: ignore
 
       - name: Stage library files
         env:
@@ -187,7 +252,7 @@ jobs:
         run: |
           mkdir -p dist
           cp androidTest/libs/defradb.aar dist/defradb-release.aar
-          printf 'SDK commit: %s\nDefraDB commit: %s\n' \
+          printf 'SDK commit: %s\ndefradb.rs commit: %s\n' \
             "$(git rev-parse HEAD)" "$DEFRADB_SHA" > dist/defradb-release.txt
           cd dist
           shasum -a 256 defradb-release.aar > defradb-release.aar.sha256
@@ -198,4 +263,3 @@ jobs:
           name: defradb-android
           path: dist/*
           if-no-files-found: error
-

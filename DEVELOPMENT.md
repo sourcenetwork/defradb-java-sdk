@@ -4,70 +4,88 @@ This guide covers building and testing the SDK itself. For installation and appl
 
 ## Prerequisites
 
-All builds require a local [DefraDB](https://github.com/sourcenetwork/defradb) checkout and its build prerequisites. The SDK and CI target the latest DefraDB default branch. Keep your local checkout up to date; upstream C API changes should be reflected in the Java/JNI bindings rather than worked around by pinning an older revision. The Gradle wrapper downloads Gradle 8.3 when necessary.
+All builds require a local [defradb.rs](https://github.com/sourcenetwork/defradb.rs) checkout and its build prerequisites. The SDK and CI target the latest defradb.rs default branch. Keep your local checkout up to date; upstream C API changes should be reflected in the Java/JNI bindings rather than worked around by pinning an older revision. The Gradle wrapper downloads Gradle 8.3 when necessary.
+
+Every build needs [rustup](https://rustup.rs), which installs the Rust toolchain pinned in the checkout's `rust-toolchain.toml` the first time Cargo runs there, and `cbindgen` (`cargo install cbindgen`). defradb.rs also needs `protoc` (`brew install protobuf`, or `protobuf-compiler` on Debian and Ubuntu); on Linux it also needs `libssl-dev`, `pkg-config` and `libdbus-1-dev`.
 
 Desktop builds require a full JDK (11–20, preferably 17) with `JAVA_HOME` set and a C compiler: Xcode Command Line Tools on macOS, or GCC on Linux. Gradle 8.3 cannot run on JDK 21 or later.
 
-Android builds require JDK 17, Android SDK API 34, and an Android NDK with `ANDROID_NDK` set. The build selects the Darwin or Linux NDK host toolchain automatically. On macOS, the upstream Android build additionally requires GNU `sed` available as `sed` on `PATH`; the native macOS target supports the system BSD `sed`.
+Android builds require JDK 17, Android SDK API 34, and an Android NDK with `ANDROID_NDK` set. The build selects the Darwin or Linux NDK host toolchain automatically and adds the Rust Android targets with `rustup`.
 
 ## Automated build
 
 ```shell
 # Linux
-./build.sh --defra-dir /path/to/defradb --linux
+./build.sh --defra-dir /path/to/defradb.rs --linux
 
 # macOS
-./build.sh --defra-dir /path/to/defradb --macos
+./build.sh --defra-dir /path/to/defradb.rs --macos
 
 # Android; can also be combined with the host desktop flag
-./build.sh --defra-dir /path/to/defradb --android
+./build.sh --defra-dir /path/to/defradb.rs --android
 ```
 
-The script uses DefraDB’s `build-c-shared-linux`, `build-c-shared-macos`, or `build-c-shared-android` Makefile target. These targets write native libraries and headers to the DefraDB checkout’s `build` directory before copying them into the SDK. Go must satisfy the version in that checkout's `go.mod`; normal Go toolchain auto-download behavior applies.
+The script:
 
-It then compiles the JNI wrapper and packages the Java classes and native libraries. Desktop output is `build/libs/defradb.jar`, for the host architecture only. Android output is `build/outputs/aar/defradb-release.aar`, containing `arm64-v8a` and `x86_64` libraries.
+1. Generates `src/main/c/defra.h` from the checkout's `crates/entry-points/ffi` crate with `cbindgen`, using that crate's `cbindgen.toml`.
+2. Builds the crate's shared library with `cargo rustc --release -p ffi --lib --crate-type cdylib`, for the host or for `aarch64-linux-android` and `x86_64-linux-android` with the NDK's clang as linker. Cargo names the library `libffi`; the script stages it as `libdefradb`, the name the JNI wrapper links and `NativeLoader` extracts, and on Linux and Android links it with that name as its `DT_SONAME`. `CARGO_TARGET_DIR` is respected.
+3. Compiles the JNI wrapper and packages the Java classes and native libraries. Desktop output is `build/libs/defradb.jar`, for the host architecture only. Android output is `build/outputs/aar/defradb-release.aar`, containing `arm64-v8a` and `x86_64` libraries.
 
 Options:
 
-- `--cleanup` removes generated headers and native libraries after successful packaging.
-- `--silent` passes the `silent` build tag to Go.
+- `--features <list>` replaces the `ffi` crate's default features for the desktop library, for example `--features native,wasmtime-runtime,vera,libp2p,profiling` to add profiling to the defaults.
+- `--android-features <list>` sets the Android library's features (default `native,iroh`).
+- `--cleanup` removes the generated header and native libraries after successful packaging.
 - `--help` displays usage.
 
 The script can be invoked from any directory. Relative `--defra-dir` paths resolve from the caller's working directory.
 
+A defradb.rs build stamps the build time from its git state. Running Cargo there from two different git installations (for example Windows Git and WSL's git on the same checkout) rewrites the git index each time and forces a full rebuild; use one.
+
 ## Native compilation and packaging
 
-After the Go build, native libraries are staged in `src/main/macosLibs`, `src/main/linuxLibs`, or `src/main/jniLibs/<abi>`. Generated headers are staged in `src/main/c`.
+Native libraries are staged in `src/main/macosLibs`, `src/main/linuxLibs`, or `src/main/jniLibs/<abi>`. The generated header is staged in `src/main/c`.
 
-To rebuild just the desktop JNI wrapper and JAR using existing generated files:
+To rebuild just the desktop JNI wrapper and JAR using the existing header and library:
 
 ```shell
-# macOS; use --linux on Linux
-./src/main/c/build.sh --macos
+# Linux
+./src/main/c/build.sh --linux
 ./gradlew -b build-linux.gradle build
+
+# macOS
+./src/main/c/build.sh --macos
+./gradlew -b build-macos.gradle build
 ```
 
-`build-linux.gradle` is shared by both desktop platforms; its existing name is retained for compatibility. macOS uses `.dylib` libraries with `@loader_path`; Linux uses `.so` libraries with `$ORIGIN`. The Java loader selects the platform's library extension automatically.
+macOS uses `.dylib` libraries with `@loader_path`; Linux uses `.so` libraries with `$ORIGIN`. The Java loader selects the platform's library extension automatically.
+
+`nativewrapper.c` is tracked in this repository and compiled with `-Wall -Wextra -Werror`. It registers its natives with `RegisterNatives` in `JNI_OnLoad`, so a Java method whose declaration no longer matches the wrapper fails when the library loads, not at its first call. `defra_profiling_start` and `defra_profiling_stop` exist only in libraries built with the `profiling` feature; the wrapper references them weakly, and the Java calls report that profiling is unavailable when they are missing.
 
 ## Tests
 
-CI builds and runs the desktop smoke test on macOS and Linux.
-
-The desktop smoke test creates and closes an in-memory node:
+CI builds the desktop library on macOS and Linux and runs both desktop tests, then builds the AAR and runs the Android instrumented test.
 
 ```shell
 mkdir -p test-out
-javac -cp build/libs/defradb.jar test/DefraTest.java -d test-out
+javac -cp build/libs/defradb.jar test/DefraTest.java test/DefraApiTest.java -d test-out
+
+# Smoke test: creates and closes an in-memory node
 java -cp build/libs/defradb.jar:test-out DefraTest
+
+# API test: exercises every SDK call on in-memory nodes
+DEFRA_ALLOW_NON_GO_VERIFIABLE_SIGNING=1 java -Xcheck:jni -cp build/libs/defradb.jar:test-out DefraApiTest
 ```
+
+`DefraApiTest` prints each failed check and a pass/fail count, and exits non-zero if any check fails. Its remote-signer check signs blocks with a P-256 key; defradb.rs refuses ES256 block signing unless `DEFRA_ALLOW_NON_GO_VERIFIABLE_SIGNING=1` is set, because Go peers cannot verify those signatures. It also checks the calls defradb.rs refuses inside a transaction (document access policies, the print dump, backups) and that truncate applies immediately even through a transaction.
 
 The Android instrumented tests live in `androidTest`. The GitHub Actions workflow builds the AAR, stages it as `androidTest/libs/defradb.aar`, and runs the tests on an API 29 x86_64 emulator.
 
 ## Troubleshooting
 
-### JNI headers are missing
+### `defra.h` is missing
 
-Run the top-level build first and ensure both `libdefradb.h` and `defra_structs.h` were copied into `src/main/c`.
+Run the top-level build first; it generates `src/main/c/defra.h` with `cbindgen`.
 
 ### `jni.h` cannot be found
 
@@ -79,4 +97,4 @@ Set `ANDROID_NDK` to the NDK root. The native build selects `darwin-x86_64` on m
 
 ### A native library fails to load
 
-Confirm that the artifact was built for the runtime platform and architecture. Android supports `arm64-v8a` and `x86_64`; the desktop JAR contains libraries for the machine on which it was built.
+Confirm that the artifact was built for the runtime platform and architecture. Android supports `arm64-v8a` and `x86_64`; the desktop JAR contains libraries for the machine on which it was built. An `UnsatisfiedLinkError` naming a native method means `nativewrapper.c` and the Java declarations disagree.

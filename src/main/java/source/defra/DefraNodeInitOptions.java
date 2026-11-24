@@ -32,7 +32,12 @@ public class DefraNodeInitOptions {
     public boolean inMemory;
     /** Whether P2P networking is disabled. */
     public boolean disableP2P;
-    /** Whether the HTTP API server is disabled. */
+    /**
+     * Has no effect: the embedded node does not serve the HTTP API.
+     *
+     * @deprecated the embedded node never starts the HTTP API server
+     */
+    @Deprecated
     public boolean disableAPI;
     /** Whether node access control is enabled. */
     public boolean enableNodeACP;
@@ -44,7 +49,12 @@ public class DefraNodeInitOptions {
     public long badgerFileSize;
     /** Badger encryption key, or {@code null} if encryption is disabled. */
     public byte[] badgerEncryptionKey;
-    /** Whether block signing is enabled by default. */
+    /**
+     * Has no effect: blocks are signed by default.
+     *
+     * @deprecated use {@link #disableSigning} to turn block signing off
+     */
+    @Deprecated
     public boolean enableSigning;
     /** Key used for searchable encryption, or {@code null} if disabled. */
     public byte[] searchableEncryptionKey;
@@ -88,6 +98,52 @@ public class DefraNodeInitOptions {
     public String remoteDACCometRPCAddress;
     /** Filesystem path for the node ACP system. */
     public String nodeACPPath;
+    /** Run without signing blocks. Signing is on by default, with the node identity or a generated key. */
+    public boolean disableSigning;
+    /** Vera chain ID, for example "vera-test". */
+    public String veraChainID;
+    /** Raw 32-byte secp256k1 private key that signs this node's Vera transactions; null for none. */
+    public byte[] veraSignerKey;
+    /** P2P transport: "libp2p" (the default) or "iroh". */
+    public String p2pTransport;
+    /** Iroh relay URL; empty for none. */
+    public String irohRelayURL;
+    /** Iroh relay mode: "default", "disabled" or "custom"; empty for the default. */
+    public String irohRelayMode;
+    /** Relay URLs for the "custom" iroh relay mode, as a JSON array of strings. */
+    public String irohRelayURLsJSON;
+    /** Address the iroh endpoint binds to, for example "127.0.0.1"; empty for any. */
+    public String irohBindAddress;
+    /** UDP port the iroh endpoint binds to; 0 lets the system pick. */
+    public int irohBindPort;
+    /** Run iroh without peer discovery. */
+    public boolean irohDisableDiscovery;
+    /** DNS origin domain for iroh discovery; empty for the default. */
+    public String irohDiscoveryOriginDomain;
+    /** Pkarr relay URL iroh discovery publishes to; empty for the default. */
+    public String irohPkarrRelayURL;
+    /** An iroh key file from before the node shared one peer key across transports, imported when the store has none. */
+    public String irohKeyPath;
+    /** Most DAG fetches in flight at once; 0 for the default. */
+    public long maxConcurrentDAGFetches;
+    /** Most pushes to peers in flight at once; 0 for the default. */
+    public long maxConcurrentPushTasks;
+    /** Most document IDs one document sync request may name; 0 for the default (1000). */
+    public long maxDocSyncRequestDocIDs;
+    /** Per-peer rate limit burst; 0 for the default. */
+    public int rateLimitBurst;
+    /** Per-peer rate limit refill rate, in tokens per second; 0 for the default (50). */
+    public double rateLimitRate;
+    /** Decides which replicated documents the node keeps; null keeps them all. */
+    public DefraReplicationFilter replicationFilter;
+    /** Memory the libp2p resource manager allows, in MiB; 0 for the default. */
+    public long p2pResourceMemoryMiB;
+    /** File descriptors the libp2p resource manager allows, used only with {@link #p2pResourceMemoryMiB}; 0 for the default. */
+    public long p2pResourceFileDescriptors;
+    /** Most streams one peer may hold open; 0 for the default. */
+    public long p2pMaxStreamsPerPeer;
+    /** Run libp2p dial-only: it connects out but accepts no connections. Refused together with {@link #listeningAddresses}. */
+    public boolean disableP2PListen;
 
     /** Creates options initialized to the native client's default values. */
     public DefraNodeInitOptions() {
@@ -126,6 +182,15 @@ public class DefraNodeInitOptions {
         this.remoteDACGRPCAddress = "";
         this.remoteDACCometRPCAddress = "";
         this.nodeACPPath = "";
+        this.veraChainID = "";
+        this.p2pTransport = "";
+        this.irohRelayURL = "";
+        this.irohRelayMode = "";
+        this.irohRelayURLsJSON = "";
+        this.irohBindAddress = "";
+        this.irohDiscoveryOriginDomain = "";
+        this.irohPkarrRelayURL = "";
+        this.irohKeyPath = "";
     }
     
 }

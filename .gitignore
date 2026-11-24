@@ -3,7 +3,6 @@ build/
 src/main/linuxLibs/
 src/main/jniLibs/
 src/main/c/*.h
-src/main/c/nativewrapper.c
 src/main/macosLibs/
 test-out/
 __pycache__/
